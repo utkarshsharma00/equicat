@@ -39,9 +39,4 @@ After each interaction, an equivariant product basis (`products` blocks) is appl
 - This step produces the final conformer-level embedding or prediction.
 
 ## Note
-
-<<<<<<< HEAD
 This process creates embeddings that capture both local atomic environments and global conformer structure, while maintaining equivariance to rotations and translations.
-=======
-This process creates embeddings that capture both local atomic environments and global conformer structure, while maintaining equivariance to rotations and translations.
->>>>>>> ee8f69a (conformer ensemble embedding combiner working)
