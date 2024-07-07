@@ -1,0 +1,8 @@
+torch>=1.9.0
+torch-scatter>=2.0.8
+torch-geometric>=2.0.0
+e3nn>=0.4.0
+numpy>=1.20.0
+ase>=3.22.0
+matscipy>=0.6.0
+molli>=0.1.0
