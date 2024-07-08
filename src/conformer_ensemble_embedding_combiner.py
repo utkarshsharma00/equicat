@@ -8,9 +8,9 @@ for combining these embeddings: Mean Pooling, Deep Sets, and Self-Attention.
 The module separates scalar and vector components of the embeddings and processes
 them separately to maintain equivariance properties.
 
-Author: [Your Name]
+Author: Utkarsh Sharma
 Version: 1.0.0
-Date: [Current Date]
+Date: 07-07-2024 (MM-DD-YYYY)
 License: MIT
 
 Classes:

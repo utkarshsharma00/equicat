@@ -1,4 +1,37 @@
-# equicat.py
+"""
+EQUICAT Model Implementation
+
+This module implements the EQUICAT model, a neural network architecture designed
+for equivariant learning on molecular systems. It leverages the MACE (Many-body 
+Atomic Cluster Expansion) framework to create a model that respects the symmetries
+inherent in molecular data.
+
+Key features:
+1. Equivariant processing of molecular geometries
+2. Handling of variable-sized molecular inputs
+3. Incorporation of spherical harmonics for angular information
+4. Use of radial basis functions for distance information
+5. Implementation of symmetric contractions for feature aggregation
+
+The EQUICAT class encapsulates the entire model, providing a forward method
+that processes input molecular data through various stages of the network.
+
+Author: Utkarsh Sharma
+Version: 1.0.0
+Date: 07-07-2024 (MM-DD-YYYY)
+License: MIT
+
+Dependencies:
+    - torch (>=1.9.0)
+    - mace (custom package)
+    - torch_geometric (>=2.0.0)
+
+Usage:
+    model = EQUICAT(model_config, z_table)
+    output = model(input_dict)
+
+For detailed usage instructions, please refer to the README.md file.
+"""
 
 import torch
 import torch.nn.functional
@@ -9,12 +42,28 @@ from torch_geometric.utils import to_dense_batch
 
 class EQUICAT(torch.nn.Module):
     def __init__(self, model_config, z_table):
+        """
+        Initialize the EQUICAT model.
+
+        Args:
+            model_config (dict): Configuration parameters for the MACE model.
+            z_table (AtomicNumberTable): Table of atomic numbers.
+        """
         super(EQUICAT, self).__init__()
         model_config['atomic_numbers'] = torch.tensor(z_table.zs)
         self.model = modules.MACE(**model_config)
         self.z_table = z_table
 
     def forward(self, input_dict):
+        """
+        Forward pass of the EQUICAT model.
+
+        Args:
+            input_dict (dict): Input dictionary containing molecular data.
+
+        Returns:
+            torch.Tensor: Processed node features.
+        """
         # Extract relevant information from the input dictionary
         positions = input_dict['positions'] 
         atomic_numbers = input_dict['atomic_numbers']
