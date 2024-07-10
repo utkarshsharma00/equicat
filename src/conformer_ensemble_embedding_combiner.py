@@ -24,7 +24,6 @@ Functions:
 Dependencies:
     - torch (>=1.9.0)
     - torch_scatter (>=2.0.8)
-    - e3nn (>=0.4.0)
 
 Usage:
     from conformer_ensemble_embedding_combiner import process_conformer_ensemble
@@ -36,8 +35,6 @@ For detailed usage instructions, please refer to the README.md file.
 
 import torch
 import torch.nn as nn
-from torch_scatter import scatter
-from e3nn import o3
 
 class ConformerEnsembleEmbeddingCombiner(nn.Module):
     """
@@ -89,109 +86,89 @@ class ConformerEnsembleEmbeddingCombiner(nn.Module):
             nn.SiLU(),
         )
 
-    def mean_pooling(self, scalar: torch.Tensor, vector: torch.Tensor, batch: torch.Tensor) -> tuple:
+    def mean_pooling(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple:
         """
         Perform mean pooling on scalar and vector embeddings.
 
         Args:
             scalar (torch.Tensor): Scalar part of the embeddings.
             vector (torch.Tensor): Vector part of the embeddings.
-            batch (torch.Tensor): Batch indices for each embedding.
 
         Returns:
             tuple: Mean-pooled scalar and vector embeddings.
         """
-        scalar_result = scatter(scalar, batch, dim=0, reduce='mean')
-        vector_result = scatter(vector, batch, dim=0, reduce='mean')
+        scalar_result = scalar.mean(dim=0, keepdim=True)
+        vector_result = vector.mean(dim=0, keepdim=True)
         return scalar_result, vector_result
 
-    def deep_sets(self, scalar: torch.Tensor, vector: torch.Tensor, batch: torch.Tensor) -> tuple:
+    def deep_sets(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple:
         """
         Apply the Deep Sets method to combine embeddings.
 
         Args:
             scalar (torch.Tensor): Scalar part of the embeddings.
             vector (torch.Tensor): Vector part of the embeddings.
-            batch (torch.Tensor): Batch indices for each embedding.
 
         Returns:
             tuple: Combined scalar and vector embeddings using Deep Sets.
         """
         scalar = self.deep_sets_phi_scalar(scalar)
-        vector = self.deep_sets_phi_vector(vector.view(vector.shape[0], -1))
-        scalar = scatter(scalar, batch, dim=0, reduce='mean')
-        vector = scatter(vector, batch, dim=0, reduce='mean')
+        vector = self.deep_sets_phi_vector(vector.reshape(vector.shape[0], vector.shape[1], -1))
+        scalar = scalar.mean(dim=0, keepdim=True)
+        vector = vector.mean(dim=0, keepdim=True)
         scalar = self.deep_sets_rho_scalar(scalar)
         vector = self.deep_sets_rho_vector(vector)
-        return scalar, vector.view(vector.shape[0], -1, 3)
+        return scalar, vector.reshape(1, vector.shape[1], self.vector_dim, 3)
 
-    def self_attention(self, scalar: torch.Tensor, vector: torch.Tensor, batch: torch.Tensor) -> tuple:
+    def self_attention(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple:
         """
         Apply the Self-Attention method to combine embeddings.
 
         Args:
             scalar (torch.Tensor): Scalar part of the embeddings.
             vector (torch.Tensor): Vector part of the embeddings.
-            batch (torch.Tensor): Batch indices for each embedding.
 
         Returns:
             tuple: Combined scalar and vector embeddings using Self-Attention.
         """
         scalar = self.self_attention_phi_scalar(scalar)
-        vector = self.self_attention_phi_vector(vector.view(vector.shape[0], -1))
+        vector = self.self_attention_phi_vector(vector.reshape(vector.shape[0], vector.shape[1], -1))
         scalar_scores = self.attention_scalar(scalar)
         vector_scores = self.attention_vector(vector)
         
-        unique_batches = batch.unique()
-        scalar_outputs, vector_outputs = [], []
+        attention_weights = torch.softmax(
+            torch.matmul(scalar_scores, scalar_scores.transpose(1, 2)) +
+            torch.matmul(vector_scores, vector_scores.transpose(1, 2)),
+            dim=-1
+        )
         
-        for b in unique_batches:
-            mask = (batch == b)
-            scalar_batch, vector_batch = scalar[mask], vector[mask]
-            scalar_scores_batch, vector_scores_batch = scalar_scores[mask], vector_scores[mask]
-            
-            attention_weights = torch.softmax(
-                torch.matmul(scalar_scores_batch, scalar_scores_batch.transpose(0, 1)) +
-                torch.matmul(vector_scores_batch, vector_scores_batch.transpose(0, 1)),
-                dim=1
-            )
-            
-            scalar_weighted = torch.matmul(attention_weights, scalar_batch)
-            vector_weighted = torch.matmul(attention_weights, vector_batch)
-            
-            scalar_aggregated = scalar_weighted.sum(dim=0, keepdim=True)
-            vector_aggregated = vector_weighted.sum(dim=0, keepdim=True)
-            
-            scalar_outputs.append(scalar_aggregated)
-            vector_outputs.append(vector_aggregated)
+        scalar_weighted = torch.matmul(attention_weights, scalar)
+        vector_weighted = torch.matmul(attention_weights, vector)
         
-        scalar_encoded = torch.cat(scalar_outputs, dim=0)
-        vector_encoded = torch.cat(vector_outputs, dim=0)
+        scalar_encoded = scalar_weighted.sum(dim=0, keepdim=True)
+        vector_encoded = vector_weighted.sum(dim=0, keepdim=True)
         
         scalar_encoded = self.self_attention_rho_scalar(scalar_encoded)
         vector_encoded = self.self_attention_rho_vector(vector_encoded)
-        return scalar_encoded, vector_encoded.view(vector_encoded.shape[0], -1, 3)
+        return scalar_encoded, vector_encoded.reshape(1, vector_encoded.shape[1], self.vector_dim, 3)
 
-    def forward(self, conformer_embeddings: torch.Tensor, batch_indices: torch.Tensor) -> dict:
+    def forward(self, conformer_embeddings: torch.Tensor) -> dict:
         """
         Process the conformer embeddings using all three methods.
 
         Args:
             conformer_embeddings (torch.Tensor): The input conformer embeddings.
-            batch_indices (torch.Tensor): Batch indices for each embedding.
 
         Returns:
             dict: A dictionary containing the results of all three methods.
         """
-        total_dim = conformer_embeddings.shape[1]
-        scalar_dim = min(self.scalar_dim, total_dim // 4)
-        vector_dim = min(self.vector_dim, (total_dim - scalar_dim) // 3)
-        scalar = conformer_embeddings[:, :scalar_dim]
-        vector = conformer_embeddings[:, scalar_dim:scalar_dim + vector_dim * 3].view(-1, vector_dim, 3)
+        num_conformers, num_atoms, total_dim = conformer_embeddings.shape
+        scalar = conformer_embeddings[:, :, :self.scalar_dim]
+        vector = conformer_embeddings[:, :, self.scalar_dim:].reshape(num_conformers, num_atoms, self.vector_dim, 3)
         
-        mean_pooled_scalar, mean_pooled_vector = self.mean_pooling(scalar, vector, batch_indices)
-        deep_sets_scalar, deep_sets_vector = self.deep_sets(scalar, vector, batch_indices)
-        self_attention_scalar, self_attention_vector = self.self_attention(scalar, vector, batch_indices)
+        mean_pooled_scalar, mean_pooled_vector = self.mean_pooling(scalar, vector)
+        deep_sets_scalar, deep_sets_vector = self.deep_sets(scalar, vector)
+        self_attention_scalar, self_attention_vector = self.self_attention(scalar, vector)
 
         return {
             'mean_pooling': (mean_pooled_scalar, mean_pooled_vector),
@@ -204,7 +181,7 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict:
     Process a batch of conformer embeddings.
 
     Args:
-        conformer_embeddings (torch.Tensor): A tensor of shape (num_conformers, ...) 
+        conformer_embeddings (torch.Tensor): A tensor of shape (num_conformers, num_atoms, total_dim) 
                                              containing the embeddings for each conformer.
 
     Returns:
@@ -212,22 +189,21 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict:
     """
     print(f"process_conformer_ensemble input shape: {conformer_embeddings.shape}")
     
-    num_conformers = conformer_embeddings.shape[0]
-    flattened_embeddings = conformer_embeddings.view(num_conformers, -1)
-    total_dim = flattened_embeddings.shape[1]
-    
+    num_conformers, num_atoms, total_dim = conformer_embeddings.shape
     scalar_dim = total_dim // 4
     vector_dim = scalar_dim
     
-    print(f"Num conformers: {num_conformers}, Total dim: {total_dim}")
+    print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
     print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
     
-    batch_indices = torch.arange(num_conformers)
     combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim)
-    results = combiner(flattened_embeddings, batch_indices)
+    results = combiner(conformer_embeddings)
+
+    # Reshape results to have separate entries for each conformer
+    for method, (scalar, vector) in results.items():
+        results[method] = (
+            scalar.repeat(num_conformers, 1, 1),  # [num_conformers, num_atoms, scalar_dim]
+            vector.repeat(num_conformers, 1, 1, 1)  # [num_conformers, num_atoms, vector_dim, 3]
+        )
 
     return results
-
-if __name__ == "__main__":
-    # Add any test or example code here
-    pass
