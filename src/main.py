@@ -47,7 +47,7 @@ from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 # Constants
 CUTOFF = 5.0
 NUM_ENSEMBLES = 2
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
 
 # Model configuration
@@ -89,6 +89,7 @@ def main():
 
         # Initialize EQUICAT model
         equicat_model = EQUICATPlusNonLinearReadout(model_config, z_table)
+        print(equicat_model)
 
         # Process conformers and generate embeddings
         conformer_embeddings = []
@@ -106,6 +107,8 @@ def main():
         conformer_embeddings = torch.stack(conformer_embeddings)
         ensemble_embeddings = process_conformer_ensemble(conformer_embeddings)
 
+        conformer_index = 0
+
         # Print results
         for method, (scalar, vector) in ensemble_embeddings.items():
             print(f"{method}:")
@@ -113,6 +116,9 @@ def main():
             print(f"  Vector shape: {vector.shape}")
             print(f"  Scalar: {scalar}")
             print(f"  Vector: {vector}")
+            print(f"  Scalar (first 5 atoms, all values):\n{scalar[conformer_index][:5]}")
+            print(f"  Vector (first 5 atoms, all values):\n{vector[conformer_index][:5]}")
+
             print("-" * 50)
 
         print("=" * 50)  # Separator between batches
