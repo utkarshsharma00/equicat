@@ -1,16 +1,17 @@
 """
 Conformer Ensemble Embedding Combiner
 
-This module provides functionality to combine embeddings from multiple conformers
+This module provides advanced functionality to combine embeddings from multiple conformers
 of a molecule into a single representation. It implements three different methods
 for combining these embeddings: Mean Pooling, Deep Sets, and Self-Attention.
 
 The module separates scalar and vector components of the embeddings and processes
-them separately to maintain equivariance properties.
+them separately to maintain equivariance properties. It now includes an additional
+step to average results across all batches of a single ensemble.
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 07-07-2024 (MM-DD-YYYY)
+Version: 1.2.0
+Date: 07-11-2024 (MM-DD-YYYY)
 License: MIT
 
 Classes:
@@ -18,19 +19,29 @@ Classes:
     combining methods.
 
 Functions:
-    process_conformer_ensemble: A utility function to prepare and process
-    conformer embeddings using the ConformerEnsembleEmbeddingCombiner.
+    process_conformer_ensemble: Processes a single batch of conformer embeddings.
+    process_ensemble_batches: Processes all batches for a single ensemble and
+    averages the results.
 
 Dependencies:
     - torch (>=1.9.0)
     - torch_scatter (>=2.0.8)
 
 Usage:
-    from conformer_ensemble_embedding_combiner import process_conformer_ensemble
+    from conformer_ensemble_embedding_combiner import process_ensemble_batches
     
-    ensemble_embeddings = process_conformer_ensemble(conformer_embeddings)
+    ensemble_embeddings = process_ensemble_batches(list_of_batch_embeddings)
 
 For detailed usage instructions, please refer to the README.md file.
+
+Change Log:
+    - v1.2.0: Added process_ensemble_batches function for ensemble-level averaging
+    - v1.1.0: Improved handling of scalar and vector components
+    - v1.0.0: Initial release with Mean Pooling, Deep Sets, and Self-Attention methods
+
+TODO:
+    - Implement GPU acceleration for large ensemble processing
+    - Add support for custom combining methods
 """
 
 import torch
@@ -176,7 +187,7 @@ class ConformerEnsembleEmbeddingCombiner(nn.Module):
             'self_attention': (self_attention_scalar, self_attention_vector)
         }
 
-def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict:
+def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """
     Process a batch of conformer embeddings.
 
@@ -207,3 +218,28 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict:
         )
 
     return results
+
+def process_ensemble_batches(batch_embeddings: list[torch.Tensor]) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Process all batches of a single ensemble and average the results.
+
+    Args:
+        batch_embeddings (List[torch.Tensor]): A list of tensors, each representing a batch of conformer embeddings.
+
+    Returns:
+        dict: A dictionary containing the averaged embeddings across all batches using different methods.
+    """
+    # Concatenate all batches
+    all_conformers = torch.cat(batch_embeddings, dim=0)
+    
+    # Process the concatenated tensor
+    results = process_conformer_ensemble(all_conformers)
+    
+    # Average the results
+    final_results = {}
+    for method, (scalar, vector) in results.items():
+        avg_scalar = scalar.mean(dim=0, keepdim=True)  # [1, num_atoms, scalar_dim]
+        avg_vector = vector.mean(dim=0, keepdim=True)  # [1, num_atoms, vector_dim, 3]
+        final_results[method] = (avg_scalar, avg_vector)
+
+    return final_results
