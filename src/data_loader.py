@@ -1,22 +1,22 @@
 """
-Conformer Data Loader and Processor
+Conformer Data Loader and Processor for EQUICAT
 
-This module provides functionality for loading and processing conformer data
-for use with the EQUICAT (Equivariant Catalysis) model. It includes a custom
-dataset class, data loading utilities, and processing functions.
+This module provides comprehensive functionality for loading and processing conformer data
+for use with the EQUICAT model. It includes a custom dataset class,
+data loading utilities, and efficient processing functions.
 
 Key components:
-1. ConformerDataset: A custom dataset class for handling conformer ensembles.
+1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
 2. compute_avg_num_neighbors: Utility function to calculate average neighbors in a batch.
 3. custom_collate: Custom collation function for batching data.
 4. process_data: Generator function for processing conformer data in batches.
 
-This module is designed to work with the MACE framework and PyTorch Geometric,
-providing efficient data handling for molecular conformer analysis.
+This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
+providing efficient and scalable data handling for molecular conformer analysis.
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 07-07-2024 (MM-DD-YYYY)
+Version: 1.1.0
+Date: 07-11-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -33,6 +33,10 @@ Usage:
         # Process batch_data
 
 For detailed usage instructions, please refer to the README.md file.
+
+Change Log:
+    - v1.1.0: Added ensemble_id to process_data output
+    - v1.0.0: Initial release
 """
 
 import torch
@@ -145,7 +149,7 @@ def process_data(conformer_dataset, batch_size=32):
         batch_size (int): Number of conformers to process in each batch.
 
     Yields:
-        tuple: Batch of conformers, unique atomic numbers, and average number of neighbors.
+        tuple: Batch of conformers, unique atomic numbers, average number of neighbors and ensemble id.
     """
     total_batches = 0
     total_conformers = 0
@@ -157,7 +161,7 @@ def process_data(conformer_dataset, batch_size=32):
         collate_fn=lambda x: x[0]
     )
 
-    for atomic_data_list, key in data_loader:
+    for ensemble_id, (atomic_data_list, key) in enumerate(data_loader):
         num_conformers = len(atomic_data_list)
         total_conformers += num_conformers
 
@@ -182,7 +186,7 @@ def process_data(conformer_dataset, batch_size=32):
             print(f"Unique Atomic Numbers: {unique_atomic_numbers}")
             print(f"Average number of neighbors: {avg_num_neighbors:.2f}")
 
-            yield batch_conformers, unique_atomic_numbers, avg_num_neighbors
+            yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id
 
         print(f"\nFinished processing Conformer Ensemble: {key}")
         print("=" * 50)
