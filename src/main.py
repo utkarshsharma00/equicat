@@ -1,10 +1,9 @@
 """
 EQUICAT Conformer Analysis Pipeline
 
-This script serves as the main entry point for the EQUICAT (Equivariant Catalysis) 
-conformer analysis pipeline. It orchestrates the entire process of loading conformer 
-data, configuring the EQUICAT model, generating embeddings, and applying various 
-pooling methods to combine these embeddings.
+This script serves as the main entry point for the EQUICAT conformer analysis pipeline. 
+It orchestrates the entire process of loading conformer data, configuring the EQUICAT model, 
+generating embeddings, and applying various pooling methods to combine these embeddings.
 
 The pipeline consists of the following key stages:
 1. Data Loading: Retrieves conformer ensembles from the MOLLI library.
@@ -107,6 +106,7 @@ def main():
 
         # Initialize EQUICAT model
         equicat_model = EQUICATPlusNonLinearReadout(model_config, z_table)
+        print("EQUICAT model initialized successfully.\n",equicat_model)
 
         # Process conformers and generate embeddings
         conformer_embeddings = []
