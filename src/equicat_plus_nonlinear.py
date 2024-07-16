@@ -88,7 +88,7 @@ class CustomNonLinearReadout(nn.Module):
             torch.Tensor: Processed output tensor.
         """
         print(f"Input shape to CustomNonLinearReadout: {x.shape}")
-
+    
         x = self.linear_1(x)
         x = self.non_linearity_1(x)
         x = self.linear_2(x)
@@ -121,7 +121,7 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         self.equicat = EQUICAT(model_config, z_table)
         
         # Initialize CustomNonLinearReadout here
-        input_irreps = o3.Irreps("32x0e + 32x1o")
+        input_irreps = o3.Irreps("32x0e")
         self.non_linear_readout = CustomNonLinearReadout(
             irreps_in=input_irreps,
             gate=self.model_config['gate']
