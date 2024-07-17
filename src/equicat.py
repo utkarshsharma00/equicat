@@ -1,10 +1,9 @@
 """
 EQUICAT Model Implementation
 
-This module implements the EQUICAT (Equivariant Catalysis) model, a neural network 
-architecture designed for equivariant learning on molecular systems. It leverages 
-the MACE (Many-body Atomic Cluster Expansion) framework to create a model that 
-respects the symmetries inherent in molecular data.
+This module implements the EQUICAT model, a neural network architecture designed for 
+equivariant learning on molecular systems. It leverages the MACE framework to create 
+a model that respects the symmetries inherent in molecular data.
 
 Key features:
 1. Equivariant processing of molecular geometries
@@ -14,8 +13,8 @@ Key features:
 5. Implementation of symmetric contractions for feature aggregation
 6. Multiple interaction and product layers for deep learning
 
-The EQUICAT class encapsulates the entire model, providing a forward method
-that processes input molecular data through various stages of the network.
+The EQUICAT class encapsulates the entire model, providing a forward method that 
+processes input molecular data through various stages of the network.
 
 Author: Utkarsh Sharma
 Version: 1.1.0
@@ -52,6 +51,13 @@ from torch_geometric.utils import to_dense_batch
 
 class EQUICAT(torch.nn.Module):
     def __init__(self, model_config, z_table):
+        """
+        Initialize the EQUICAT model.
+
+        Args:
+            model_config (dict): Configuration parameters for the MACE model.
+            z_table (AtomicNumberTable): Table of atomic numbers.
+        """
         super(EQUICAT, self).__init__()
         model_config['atomic_numbers'] = torch.tensor(z_table.zs)
         self.model = modules.MACE(**model_config)
@@ -65,6 +71,15 @@ class EQUICAT(torch.nn.Module):
         self.product_layers = torch.nn.ModuleList(self.model.products)
 
     def forward(self, input_dict):
+        """
+        Forward pass of the EQUICAT model.
+
+        Args:
+            input_dict (dict): Input dictionary containing molecular data.
+
+        Returns:
+            torch.Tensor: Processed node features.
+        """
         # Extract relevant information from the input dictionary
         positions = input_dict['positions'] 
         atomic_numbers = input_dict['atomic_numbers']
