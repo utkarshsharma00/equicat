@@ -1,6 +1,5 @@
 
-```markdown
-# EQUICAT: Equivariant Conformer Analysis Tool
+# EQUICAT
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -22,7 +21,7 @@
 
 ## Introduction
 
-EQUICAT (Equivariant Conformer Analysis Tool) is an advanced Python-based project designed for the analysis of molecular conformers using equivariant neural networks. It builds upon the MACE (Many-body Atomic Cluster Expansion) framework to process molecular geometries while preserving their inherent symmetries.
+EQUICAT is an advanced Python-based project designed for the analysis of molecular conformers using equivariant neural networks. It builds upon the MACE (Many-body Atomic Cluster Expansion) framework to process molecular geometries while preserving their inherent symmetries.
 
 The primary goal of EQUICAT is to generate and combine embeddings from multiple conformers of a molecule, providing a unified representation that can be leveraged for various downstream tasks in computational chemistry and drug discovery. By utilizing equivariant neural networks, EQUICAT ensures that the learned representations respect the fundamental symmetries of molecular systems, leading to more accurate and physically meaningful predictions.
 
@@ -44,7 +43,7 @@ cd equicat
 ## Project Structure
 
 ```
-equicat/
+equicat/src
 │
 ├── main.py
 ├── data_loader.py
@@ -52,7 +51,14 @@ equicat/
 ├── equicat_plus_nonlinear.py
 ├── conformer_ensemble_embedding_combiner.py
 ├── contrastive_loss.py
-├── train.py
+└──  train.py
+
+equicat/output
+│
+└── output.txt
+
+equicat/
+│
 ├── README.md
 └── requirements.txt
 ```
@@ -238,4 +244,3 @@ Contributions to EQUICAT are welcome! Please follow these steps:
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
-```
