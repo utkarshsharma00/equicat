@@ -51,7 +51,7 @@ equicat/src
 ├── equicat_plus_nonlinear.py
 ├── conformer_ensemble_embedding_combiner.py
 ├── contrastive_loss.py
-└──  train.py
+└── train.py
 
 equicat/output
 │
