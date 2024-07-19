@@ -54,6 +54,8 @@ from collections import OrderedDict
 
 # Define NUM_ENSEMBLES here
 NUM_ENSEMBLES = 5
+CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
 
 def setup_logging(log_file):
     """
@@ -182,11 +184,10 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, num_epochs=
 
 if __name__ == "__main__":
     # Set up logging
-    setup_logging("training_log.txt")
+    setup_logging(f"{OUTPUT_PATH}/training.log")
     logging.info("Starting EQUICAT training")
 
     # Load your conformer ensemble
-    CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
 
@@ -196,7 +197,7 @@ if __name__ == "__main__":
     
     # Calculate average number of neighbors and get unique atomic numbers
     avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(temp_dataset)
-    np.save('unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
+    np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
     logging.info("Initializing model configuration...")
     logging.info(f"Unique atomic numbers in dataset: {unique_atomic_numbers}")
     logging.info(f"Average number of neighbors across dataset: {avg_num_neighbors}")
@@ -229,5 +230,5 @@ if __name__ == "__main__":
     trained_model = train_equicat(model_config, z_table, conformer_ensemble, cutoff)
 
     # Save the trained model
-    torch.save(trained_model.state_dict(), "trained_equicat_model.pt")
+    torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
     logging.info("Model training completed and saved.")
