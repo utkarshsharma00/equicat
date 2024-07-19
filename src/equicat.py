@@ -83,6 +83,14 @@ class EQUICAT(torch.nn.Module):
         # Extract relevant information from the input dictionary
         positions = input_dict['positions'] 
         atomic_numbers = input_dict['atomic_numbers']
+        try:
+            indices = tools.utils.atomic_numbers_to_indices(atomic_numbers, z_table=self.z_table)
+        except ValueError as e:
+            print(f"Warning: Unexpected atomic number encountered. Error: {e}")
+            print(f"Unique atomic numbers in input: {torch.unique(atomic_numbers)}")
+            print(f"Atomic numbers in z_table: {self.z_table.zs}")
+            # Handle the error (e.g., by skipping this input or assigning a default index)
+            indices = torch.zeros_like(atomic_numbers)  # Or some other default behavior
         edge_index = input_dict['edge_index']
 
         # Set shifts to zero (assuming no periodic boundary conditions)
