@@ -2,7 +2,7 @@
 EQUICAT Plot Loss Curves
 
 This script provides interactive loss curves for analyzing the training process of the EQUICAT model. 
-It generates three interactive HTML plots:
+It generates three types of interactive HTML plots:
 1. Average Loss per Epoch: Shows the trend of average loss across training epochs.
 2. Average Batch Loss Across Epochs: Displays the average loss for each batch, computed across all epochs.
 3. Individual Batch Loss Across Epochs: Shows separate plots for each batch's loss across all epochs.
@@ -11,8 +11,8 @@ The script reads training data from a log file, processes it, and creates intera
 These visualizations allow users to hover over data points for detailed information and zoom/pan for closer inspection.
 
 Author: Utkarsh Sharma
-Version: 1.2.0
-Date: 07-21-2024 (MM-DD-YYYY)
+Version: 1.3.0
+Date: 07-22-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -20,9 +20,10 @@ Dependencies:
     - pandas (>=1.0.0)
 
 Usage:
-    python visualize_training.py
+    python plot_loss_curves.py
 
 Change Log:
+    - v1.3.0: Refactored to handle large datasets and organize output in subdirectories
     - v1.2.0: Added individual batch loss plots across epochs
     - v1.1.0: Added average batch loss across epochs plot
     - v1.0.0: Initial implementation with average loss per epoch plot
@@ -31,6 +32,7 @@ TODO:
     - Implement command-line arguments for configurable input/output paths
     - Add option to export plots as static images (PNG/SVG)
     - Implement error handling for missing or corrupted log files
+    - Add functionality to compare multiple training runs
 """
 
 import plotly.graph_objects as go
@@ -161,34 +163,34 @@ def plot_individual_batch_loss_across_epochs(log_file):
         print("No batch loss data found in the log file.")
         return
     
-    # Create subplots
-    fig = make_subplots(rows=len(batch_losses), cols=1, 
-                        subplot_titles=[f'Batch {batch}' for batch in sorted(batch_losses.keys())],
-                        shared_xaxes=True, vertical_spacing=0.02)
+    # Create a subdirectory for batch plots
+    batch_plots_dir = os.path.join(OUTPUT_PATH, "batch_plots")
+    os.makedirs(batch_plots_dir, exist_ok=True)
     
-    for i, (batch, losses) in enumerate(sorted(batch_losses.items()), 1):
+    # Create a separate plot for each batch
+    for batch, losses in sorted(batch_losses.items()):
         epochs = sorted(losses.keys())
         loss_values = [losses[epoch] for epoch in epochs]
         
-        fig.add_trace(
-            go.Scatter(x=epochs, y=loss_values, mode='lines+markers',
-                       name=f'Batch {batch}',
-                       hovertemplate='Epoch: %{x}<br>Loss: %{y:.4f}<extra></extra>'),
-            row=i, col=1
+        fig = go.Figure(data=go.Scatter(
+            x=epochs,
+            y=loss_values,
+            mode='lines+markers',
+            name=f'Batch {batch}',
+            hovertemplate='Epoch: %{x}<br>Loss: %{y:.4f}<extra></extra>'
+        ))
+        
+        fig.update_layout(
+            title=f'Loss for Batch {batch} Across Epochs',
+            xaxis_title='Epoch',
+            yaxis_title='Loss',
+            hovermode='closest'
         )
         
-        fig.update_yaxes(title_text="Loss", row=i, col=1)
+        # Save the plot in the batch_plots subdirectory
+        pio.write_html(fig, file=os.path.join(batch_plots_dir, f'batch_{batch}_loss.html'), auto_open=False)
     
-    fig.update_layout(
-        title_text="Individual Batch Loss Across Epochs",
-        height=300 * len(batch_losses),  # Adjust height based on number of batches
-        showlegend=False,
-        hovermode='closest'
-    )
-    
-    fig.update_xaxes(title_text="Epoch", row=len(batch_losses), col=1)
-    
-    pio.write_html(fig, file=os.path.join(OUTPUT_PATH, 'individual_batch_loss_across_epochs.html'), auto_open=False)
+    print(f"Generated individual batch loss plots for {len(batch_losses)} batches in {batch_plots_dir}")
 
 def main():
     """
