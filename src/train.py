@@ -3,20 +3,21 @@ EQUICAT Model Training Script
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
-training loop, logging functionality, and early stopping.
+training loop, logging functionality, early stopping, and robust error handling.
 
 Key features:
-1. Customizable logging setup
+1. Customizable logging setup with detailed gradient and loss tracking
 2. Dynamic calculation of average neighbors and unique atomic numbers
 3. Contrastive loss for semi-supervised learning
-4. Gradient checking and comprehensive logging during training
+4. Gradient clipping and comprehensive logging during training
 5. Configurable model parameters and training hyperparameters
 6. Total runtime measurement
 7. Early stopping to prevent overfitting
+8. Robust error handling and NaN detection
 
 Author: Utkarsh Sharma
-Version: 1.3.0
-Date: 07-21-2024 (MM-DD-YYYY)
+Version: 1.4.0
+Date: 07-22-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -31,14 +32,16 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v1.4.0: Added robust error handling, gradient clipping, and NaN detection
     - v1.3.0: Implemented early stopping
     - v1.2.0: Added total runtime measurement and made constants global
     - v1.1.0: Added gradient checking and improved logging
     - v1.0.0: Initial implementation of EQUICAT training pipeline
 
 TODO:
-    - Add support for model checkpointing
     - Implement learning rate scheduling
+    - Add support for distributed training
+    - Implement checkpointing for resuming training
 """
 
 import torch
@@ -47,6 +50,7 @@ import logging
 import sys
 import numpy as np
 import time
+import torch.nn as nn
 from torch.optim import Adam
 from e3nn import o3
 from mace import data, modules, tools
@@ -55,17 +59,20 @@ from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import ConformerDataset, process_data
 from contrastive_loss import contrastive_loss
 from collections import OrderedDict
+from torch.autograd import detect_anomaly
 
 # Global constants
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-NUM_ENSEMBLES = 1
+NUM_ENSEMBLES = 5
 CUTOFF = 5.0
-NUM_EPOCHS = 25
+NUM_EPOCHS = 10
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EARLY_STOPPING_PATIENCE = 10
 EARLY_STOPPING_DELTA = 1e-4
+GRADIENT_CLIP_VALUE = 1.0
+EPSILON = 1e-8
 
 def setup_logging(log_file):
     """
@@ -152,51 +159,57 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
         total_loss = 0.0
         batch_count = 0
 
-        for batch_conformers, _, _, ensemble_id in process_data(dataset, batch_size=BATCH_SIZE):
-            optimizer.zero_grad()
+        with detect_anomaly():
+            for batch_conformers, _, _, ensemble_id in process_data(dataset, batch_size=BATCH_SIZE):
+                optimizer.zero_grad()
 
-            embeddings = []
-            for conformer in batch_conformers:
-                input_dict = {
-                    'positions': conformer.positions,
-                    'atomic_numbers': conformer.atomic_numbers,
-                    'edge_index': conformer.edge_index
-                }
-                output = model(input_dict)
-                embeddings.append(output)
+                embeddings = []
+                for conformer in batch_conformers:
+                    input_dict = {
+                        'positions': conformer.positions,
+                        'atomic_numbers': conformer.atomic_numbers,
+                        'edge_index': conformer.edge_index
+                    }
+                    output = model(input_dict)
+                    embeddings.append(output)
 
-            embeddings = torch.stack(embeddings)
-            batch_ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=embeddings.device)
+                embeddings = torch.stack(embeddings)
+                batch_ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=embeddings.device)
 
-            loss = contrastive_loss(embeddings, batch_ensemble_ids)
+                loss = contrastive_loss(embeddings, batch_ensemble_ids)
 
-            logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item()}")
+                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
+                logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item():.6f}")
+                logging.info(f"Ensemble IDs: {batch_ensemble_ids}")
 
-            if loss.item() == 0:
-                logging.warning("Loss is zero! Check embeddings and loss computation.")
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logging.error(f"NaN or Inf loss detected: {loss.item()}")
+                    continue
 
-            loss.backward()
+                loss.backward()
 
-            # Gradient check
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    if grad_norm == 0:
-                        logging.warning(f"Gradient for {name} is zero!")
-                    elif torch.isnan(param.grad).any():
-                        logging.warning(f"Gradient for {name} contains NaN values!")
+                # Gradient clipping
+                nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
 
-            optimizer.step()
+                # Gradient check
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        if grad_norm == 0:
+                            logging.warning(f"Gradient for {name} is zero!")
+                        elif torch.isnan(param.grad).any():
+                            logging.warning(f"Gradient for {name} contains NaN values!")
+                        logging.info(f"Gradient norm for {name}: {grad_norm:.6f}")
 
-            total_loss += loss.item()
-            batch_count += 1
+                optimizer.step()
 
-            # Add this logging statement
-            logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.4f}")
+                total_loss += loss.item()
+                batch_count += 1
 
-        avg_loss = total_loss / batch_count
-        # Add this logging statement
-        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Average Loss: {avg_loss:.4f}")
+                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}")
+
+        avg_loss = total_loss / (batch_count + EPSILON)  # Add epsilon to prevent division by zero
+        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Average Loss: {avg_loss:.6f}")
 
         # Early stopping check
         if avg_loss < best_loss - EARLY_STOPPING_DELTA:
