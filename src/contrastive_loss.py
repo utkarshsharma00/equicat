@@ -11,6 +11,7 @@ Key Features:
 - Supports variable number of atoms per conformer
 - Utilizes efficient PyTorch operations for scalability
 - Implements a margin-based loss for negative pairs
+- Includes robust error handling and stability improvements
 
 The loss function is defined as:
 L = ∑(i,j) [ y(i,j) * ||z(i) - z(j)||^2 + (1 - y(i,j)) * max(0, margin - ||z(i) - z(j)||)^2 ]
@@ -20,12 +21,9 @@ where:
 - y(i,j) is 1 if the conformers belong to the same ensemble, 0 otherwise
 - margin is a hyperparameter defining the minimum distance between embeddings of different ensembles
 
-This implementation is optimized for batch processing and uses efficient PyTorch operations,
-making it suitable for large-scale molecular dynamics simulations and drug discovery applications.
-
 Author: Utkarsh Sharma
-Version: 1.1.0
-Date: 07-18-2024 (MM-DD-YYYY)
+Version: 1.2.0
+Date: 07-22-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -50,15 +48,20 @@ Usage:
 For a complete example, refer to the `main()` function in this file.
 
 Change Log:
-    - v1.1.0 : Updated to handle batch processing of conformer embeddings
-    - v1.0.0 : Initial implementation of contrastive loss for molecular conformers
+    - v1.2.0: Added robust error handling and stability improvements
+    - v1.1.0: Updated to handle batch processing of conformer embeddings
+    - v1.0.0: Initial implementation of contrastive loss for molecular conformers
 
 TODO:
     - Implement an equivariant contrastive loss
+    - Add support for custom distance metrics
+    - Optimize performance for very large batch sizes
 """
 
 import torch
 import torch.nn.functional as F
+
+EPSILON = 1e-8
 
 def contrastive_loss(embeddings: torch.Tensor, ensemble_ids: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
     """
@@ -105,7 +108,7 @@ def contrastive_loss(embeddings: torch.Tensor, ensemble_ids: torch.Tensor, margi
     
     # Remove self-comparisons and compute mean loss
     loss.fill_diagonal_(0)
-    loss = loss.sum() / (len(ensemble_ids) * (len(ensemble_ids) - 1))
+    loss = loss.sum() / (len(ensemble_ids) * (len(ensemble_ids) - 1)) + EPSILON
     
     return loss
 
