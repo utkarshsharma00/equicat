@@ -157,6 +157,10 @@ def plot_individual_batch_loss_across_epochs(log_file):
                 max_epoch = max(max_epoch, epoch)
                 max_batch = max(max_batch, batch)
     
+    if not batch_losses:
+        print("No batch loss data found in the log file.")
+        return
+    
     # Create subplots
     fig = make_subplots(rows=len(batch_losses), cols=1, 
                         subplot_titles=[f'Batch {batch}' for batch in sorted(batch_losses.keys())],
@@ -190,10 +194,14 @@ def main():
     """
     Main function to generate and save the loss curve plots.
     """
-    plot_average_loss_per_epoch(LOG_FILE)
-    plot_average_batch_loss_across_epochs(LOG_FILE)
-    plot_individual_batch_loss_across_epochs(LOG_FILE)
-    print("Visualization complete. Check the output directory for the generated HTML plots.")
+    try:
+        plot_average_loss_per_epoch(LOG_FILE)
+        plot_average_batch_loss_across_epochs(LOG_FILE)
+        plot_individual_batch_loss_across_epochs(LOG_FILE)
+        print("Visualization complete. Check the output directory for the generated HTML plots.")
+    except Exception as e:
+        print(f"An error occurred during visualization: {str(e)}")
+        print("Please check if the log file exists and contains valid data.")
 
 if __name__ == "__main__":
     main()
