@@ -4,3 +4,4 @@ __pycache__/
 ../output/.DS_Store
 ../saved models/
 ../output/
+bfg.jar
