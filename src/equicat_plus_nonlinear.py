@@ -12,9 +12,14 @@ non-linear readout layer. It provides two main classes:
 The module is designed to preserve equivariance while allowing for more
 complex, non-linear processing of molecular representations.
 
+New features:
+- Extensive debug printing throughout the forward pass
+- Detailed shape and content logging for intermediate tensors
+- Enhanced forward pass summary including non-linear readout details
+
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 07-07-2024 (MM-DD-YYYY)
+Version: 1.1.0
+Date: 07-26-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -27,6 +32,10 @@ Usage:
     output = model(input_dict)
 
 For detailed usage instructions, please refer to the README.md file.
+
+Change Log:
+    - v1.1.0: Added extensive debug printing and enhanced forward pass summary
+    - v1.0.0: Initial implementation of EQUICAT Plus Non-Linear Readout
 """
 
 import torch
@@ -50,6 +59,9 @@ class CustomNonLinearReadout(nn.Module):
         Args:
             irreps_in (o3.Irreps): Input irreducible representations.
             gate (callable): Activation function for scalar features.
+
+        Returns:
+            None
         """
         super().__init__()
         self.irreps_in = o3.Irreps(irreps_in)
@@ -115,6 +127,9 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         Args:
             model_config (dict): Configuration for the EQUICAT model.
             z_table (AtomicNumberTable): Table of atomic numbers.
+
+        Returns:
+            None
         """
         super().__init__()
         self.model_config = model_config
@@ -127,6 +142,25 @@ class EQUICATPlusNonLinearReadout(nn.Module):
             gate=self.model_config['gate']
         )
         print(f"Initialized CustomNonLinearReadout with input irreps: {input_irreps}")
+
+    def get_forward_pass_summary(self):
+        """
+        Get a summary of the forward pass for the entire model.
+
+        Args:
+            None
+
+        Returns:
+            str: A string containing the summary of the forward pass.
+        """
+        equicat_summary = self.equicat.get_forward_pass_summary()
+        nonlinear_summary = [
+            "\nNonLinear Readout Summary:",
+            f"Input: {self.non_linear_readout.irreps_in}",
+            "3 linear layers with non-linear activations",
+            f"Output: {self.non_linear_readout.linear_3.irreps_out}"
+        ]
+        return equicat_summary + "\n" + "\n".join(nonlinear_summary)
 
     def forward(self, input_dict):
         """
@@ -141,9 +175,11 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         # Get output from EQUICAT
         equicat_output = self.equicat(input_dict)
         print(f"EQUICAT output shape: {equicat_output.shape}")
+        print(f"EQUICAT output: {equicat_output}")
         
         # Apply NonLinearReadout
         final_output = self.non_linear_readout(equicat_output)
         print(f"Final output shape after NonLinearReadout: {final_output.shape}")
+        print(f"Final output: {final_output}")
         
         return final_output

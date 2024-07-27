@@ -51,20 +51,23 @@ import sys
 import numpy as np
 import time
 import torch.nn as nn
-from torch.optim import Adam
+import matplotlib.pyplot as plt
 from e3nn import o3
+from torch.optim import Adam
+from torch.nn.utils import clip_grad_norm_
+from torch.autograd import detect_anomaly
 from mace import data, modules, tools
 from mace.tools import to_numpy
+from collections import OrderedDict
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import ConformerDataset, process_data
 from contrastive_loss import contrastive_loss
-from collections import OrderedDict
-from torch.autograd import detect_anomaly
+from conformer_ensemble_embedding_combiner import process_conformer_ensemble
 
 # Global constants
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-NUM_ENSEMBLES = 5
+NUM_ENSEMBLES = 2
 CUTOFF = 5.0
 NUM_EPOCHS = 10
 BATCH_SIZE = 16
@@ -73,6 +76,7 @@ EARLY_STOPPING_PATIENCE = 10
 EARLY_STOPPING_DELTA = 1e-4
 GRADIENT_CLIP_VALUE = 1.0
 EPSILON = 1e-8
+VISUALIZATION_INTERVAL = 1
 
 def setup_logging(log_file):
     """
@@ -164,6 +168,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
                 optimizer.zero_grad()
 
                 embeddings = []
+
                 for conformer in batch_conformers:
                     input_dict = {
                         'positions': conformer.positions,
@@ -224,6 +229,8 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
             model.load_state_dict(best_model)
             break
 
+        plt.close('all')
+
     logging.info("Training completed")
     return model
 
@@ -283,3 +290,16 @@ if __name__ == "__main__":
     end_time = time.time()
     total_runtime = end_time - start_time
     logging.info(f"Total runtime: {total_runtime:.2f} seconds")
+
+
+
+
+
+
+
+
+
+
+
+
+

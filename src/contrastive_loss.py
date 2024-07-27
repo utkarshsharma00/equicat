@@ -111,32 +111,3 @@ def contrastive_loss(embeddings: torch.Tensor, ensemble_ids: torch.Tensor, margi
     loss = loss.sum() / (len(ensemble_ids) * (len(ensemble_ids) - 1)) + EPSILON
     
     return loss
-
-def main():
-    """
-    Example usage of the contrastive_loss function.
-    
-    This function demonstrates how to use the contrastive_loss function
-    with synthetic data representing molecular conformer embeddings.
-    """
-    # Set random seed for reproducibility
-    torch.manual_seed(42)
-    
-    # Generate synthetic data
-    batch_size = 10
-    num_atoms = 5
-    embedding_dim = 3
-    embeddings = torch.randn(batch_size, num_atoms, embedding_dim)
-    
-    # Generate random ensemble IDs (0 to 2)
-    ensemble_ids = torch.randint(0, 3, (batch_size,))
-    
-    # Compute contrastive loss
-    loss = contrastive_loss(embeddings, ensemble_ids)
-    
-    print(f"Embeddings shape: {embeddings.shape}")
-    print(f"Ensemble IDs: {ensemble_ids}")
-    print(f"Contrastive Loss: {loss.item():.4f}")
-
-if __name__ == "__main__":
-    main()

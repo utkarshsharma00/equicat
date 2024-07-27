@@ -2,8 +2,8 @@
 Conformer Data Loader and Processor for EQUICAT
 
 This module provides comprehensive functionality for loading and processing conformer data
-for use with the EQUICAT model. It includes a custom dataset class,
-data loading utilities, and efficient processing functions.
+for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
+and efficient processing functions.
 
 Key components:
 1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
@@ -14,9 +14,23 @@ Key components:
 This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
 providing efficient and scalable data handling for molecular conformer analysis.
 
+Important Note:
+During sanity checking, it was discovered that the edge_index remained the same even when
+the positions (xyz coordinates) of the conformers were changing. This was a critical error
+as the edge_index should reflect the unique connectivity of each conformer based on its
+specific atomic positions and the cutoff. The issue was resolved by using MACE's 
+AtomicData.from_config method to generate unique edge_index for each conformer, 
+ensuring that the connectivity is correctly updated for each set of atomic positions.
+
+Fix Implementation:
+1. In the ConformerDataset.__getitem__ method, we now use data.AtomicData.from_config
+   to create atomic data for each conformer separately.
+2. The edge_index is now directly obtained from the atomic_data object for each conformer,
+   ensuring unique connectivity information for each set of atomic positions.
+
 Author: Utkarsh Sharma
-Version: 1.1.0
-Date: 07-11-2024 (MM-DD-YYYY)
+Version: 1.2.0
+Date: 07-24-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -35,6 +49,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v1.2.0: Fixed critical edge_index generation issue, ensuring unique connectivity for each conformer
     - v1.1.0: Added ensemble_id to process_data output
     - v1.0.0: Initial release
 """
@@ -54,7 +69,7 @@ class ConformerDataset:
         keys: List of keys for conformer ensembles.
     """
 
-    def __init__(self, conformer_ensemble, cutoff, num_ensembles=2):
+    def __init__(self, conformer_ensemble, cutoff, num_ensembles=5):
         """
         Initialize the ConformerDataset.
 
@@ -90,25 +105,34 @@ class ConformerDataset:
             atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
             print(f"Retrieved conformer ensemble {key} with {coords.shape[0]} conformers")
             print(f"Atomic Numbers: {atomic_numbers}")
-            
+            print(f"Coords shape: {coords.shape}")  # Should be (num_conformers, num_atoms, 3)
+
+            z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
+
             atomic_data_list = []
             for i in range(coords.shape[0]):
+                # Create a Configuration object for each conformer
                 config = data.Configuration(
                     atomic_numbers=atomic_numbers.numpy(),
                     positions=coords[i].numpy()
                 )
-                z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
+                
+                # Use MACE's AtomicData.from_config to generate atomic data with correct edge_index
                 atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
                 
+                # Create PyTorch Geometric Data object with the correct edge_index
                 torch_geo_data = Data(
                     x=torch.tensor(atomic_data.node_attrs, dtype=torch.float32),
-                    positions=torch.tensor(coords[i], dtype=torch.float32),
-                    edge_index=torch.tensor(atomic_data.edge_index, dtype=torch.long),
+                    positions=atomic_data.positions,
+                    edge_index=atomic_data.edge_index,
                     atomic_numbers=atomic_numbers,
                     key=key
                 )
+                
                 atomic_data_list.append(torch_geo_data)
-            
+
+            print(f"Number of conformers in atomic_data_list: {len(atomic_data_list)}")
+
             return atomic_data_list, key
 
 def compute_avg_num_neighbors(batch):
@@ -174,6 +198,11 @@ def process_data(conformer_dataset, batch_size=32):
 
             print(f"\nBatch {total_batches} in Ensemble: {key}")
             print(f"Number of conformers in this batch: {len(batch_conformers)}")
+            
+            #! Sanity checks
+            # for j, conformer in enumerate(batch_conformers):
+            #     print(f"Conformer {j} positions shape: {conformer.positions.shape}")
+            #     print(f"Conformer {j} positions:\n {conformer.positions}")
 
             unique_atomic_numbers = []
             for conformer in batch_conformers:
