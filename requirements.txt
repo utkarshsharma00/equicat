@@ -182,7 +182,7 @@ xz==5.4.6
 yaml-cpp==0.8.0
 yarl==1.9.4
 zeromq==4.3.5
-zipp==3.17.0
+zipp==3.19.1
 zlib==1.2.13
 zstandard==0.22.0
 zstd==1.5.5
