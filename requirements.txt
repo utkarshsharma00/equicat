@@ -13,7 +13,7 @@ brotli-python==1.0.9
 bzip2==1.0.8
 c-ares==1.19.1
 ca-certificates==2024.3.11
-certifi==2024.2.2
+certifi==2024.7.4
 cffi==1.16.0
 charset-normalizer==3.3.2
 colorama==0.4.6
