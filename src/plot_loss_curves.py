@@ -11,8 +11,8 @@ The script reads training data from a log file, processes it, and creates intera
 These visualizations allow users to hover over data points for detailed information and zoom/pan for closer inspection.
 
 Author: Utkarsh Sharma
-Version: 1.3.0
-Date: 07-22-2024 (MM-DD-YYYY)
+Version: 1.4.0
+Date: 07-28-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -23,6 +23,7 @@ Usage:
     python plot_loss_curves.py
 
 Change Log:
+    - v1.4.0: Ensured the batch_plots directory is completely cleared and recreated for each run
     - v1.3.0: Refactored to handle large datasets and organize output in subdirectories
     - v1.2.0: Added individual batch loss plots across epochs
     - v1.1.0: Added average batch loss across epochs plot
@@ -42,6 +43,7 @@ import pandas as pd
 import re
 from collections import defaultdict
 import os
+import shutil
 
 # Constants
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
@@ -192,11 +194,32 @@ def plot_individual_batch_loss_across_epochs(log_file):
     
     print(f"Generated individual batch loss plots for {len(batch_losses)} batches in {batch_plots_dir}")
 
+def clear_output_directory(directory):
+    """
+    Clear all HTML files in the specified directory.
+    If it's the batch_plots directory, remove it entirely and recreate.
+    
+    Args:
+        directory (str): Path to the directory to clear.
+    """
+    if os.path.basename(directory) == "batch_plots":
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+        os.makedirs(directory)
+    else:
+        for filename in os.listdir(directory):
+            if filename.endswith(".html"):
+                os.remove(os.path.join(directory, filename))
+
 def main():
     """
     Main function to generate and save the loss curve plots.
     """
     try:
+        # Clear existing plots
+        clear_output_directory(OUTPUT_PATH)
+        clear_output_directory(os.path.join(OUTPUT_PATH, "batch_plots"))
+
         plot_average_loss_per_epoch(LOG_FILE)
         plot_average_batch_loss_across_epochs(LOG_FILE)
         plot_individual_batch_loss_across_epochs(LOG_FILE)
