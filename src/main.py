@@ -1,7 +1,9 @@
 """
-EQUICAT Conformer Analysis Pipeline
+EQUICAT Conformer Analysis Pipeline (GPU-enabled version)
 
-This script serves as the main entry point for the EQUICAT conformer analysis pipeline. 
+This script serves as the main entry point for the EQUICAT conformer analysis pipeline,
+now with GPU support.
+
 It orchestrates the entire process of loading conformer data, configuring the EQUICAT model, 
 generating embeddings, and applying various pooling methods to combine these embeddings.
 
@@ -17,8 +19,8 @@ This script ties together various modules and functions to create a comprehensiv
 workflow for analyzing molecular conformers using equivariant neural networks.
 
 Author: Utkarsh Sharma
-Version: 1.2.0
-Date: 07-26-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -34,6 +36,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.0.0: Added GPU support
     - v1.2.0: Added extensive sanity checks and detailed embedding prints along with PCA visualizations
     - v1.1.0: Added ensemble-level processing and improved batch handling
     - v1.0.0: Initial implementation of EQUICAT pipeline
@@ -56,7 +59,7 @@ from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 
 # Constants
 CUTOFF = 5.0
-NUM_ENSEMBLES = 1
+NUM_ENSEMBLES = 2
 BATCH_SIZE = 16
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
 
@@ -165,7 +168,7 @@ def print_detailed_embeddings(embeddings, level="Batch"):
             print(f"      Conformer {i}:")
             print(vector[i, :3])
 
-def process_and_print_ensemble(ensemble_batches, ensemble_id):
+def process_and_print_ensemble(ensemble_batches, ensemble_id, device):
     """
     Process and print embeddings for a complete ensemble.
 
@@ -184,13 +187,16 @@ def main():
     """
     Main function to run the EQUICAT conformer analysis pipeline.
     """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     conformer_dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES)
 
     current_ensemble_id = None
     ensemble_batches = []
 
-    for batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id in process_data(conformer_dataset, batch_size=BATCH_SIZE):
+    for batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id in process_data(conformer_dataset, batch_size=BATCH_SIZE, device=device):
         print(f"\nProcessing batch of {len(batch_conformers)} conformers from Ensemble {ensemble_id}")
         
         # Sanity check each conformer in the batch
@@ -199,7 +205,7 @@ def main():
             sanity_check_conformer(conformer)
 
         if current_ensemble_id is not None and current_ensemble_id != ensemble_id:
-            process_and_print_ensemble(ensemble_batches, current_ensemble_id)
+            process_and_print_ensemble(ensemble_batches, current_ensemble_id, device)
             ensemble_batches = []
 
         z_table = tools.AtomicNumberTable(unique_atomic_numbers)
@@ -208,11 +214,11 @@ def main():
         model_config.update({
             'num_elements': len(z_table),
             'atomic_energies': atomic_energies,
-            'atomic_numbers': torch.tensor(z_table.zs),
+            'atomic_numbers': torch.tensor(z_table.zs, device=device),
             'avg_num_neighbors': avg_num_neighbors
         })
 
-        equicat_model = EQUICATPlusNonLinearReadout(model_config, z_table)
+        equicat_model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
         print(equicat_model.get_forward_pass_summary())
 
         conformer_embeddings = []
@@ -242,9 +248,12 @@ def main():
         print("=" * 50)
 
     if ensemble_batches:
-        process_and_print_ensemble(ensemble_batches, current_ensemble_id)
+        process_and_print_ensemble(ensemble_batches, current_ensemble_id, device)
 
     print("Finished processing all conformers in all ensembles.")
 
 if __name__ == "__main__":
     main()
+
+
+

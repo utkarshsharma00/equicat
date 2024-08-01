@@ -1,15 +1,16 @@
 """
-Conformer Ensemble Embedding Combiner with PCA Visualization
+Conformer Ensemble Embedding Combiner with PCA Visualization (GPU-enabled version)
 
-This module provides advanced functionality to combine embeddings from multiple conformers
-of a molecule into a single representation. It implements five different methods
-for combining these embeddings: Mean Pooling, Deep Sets, Self-Attention, Improved Deep Sets,
-and Improved Self-Attention. Additionally, it now includes PCA visualization for each method
-to understand how conformers are being clustered.
+This module provides advanced functionality to combine embeddings from multiple conformers of
+a molecule into a single representation, now with GPU support. 
 
-The module separates scalar and vector components of the embeddings and processes
-them separately to maintain equivariance properties. It includes an additional
-step to average results across all batches of a single ensemble.
+It implements five different methods for combining these embeddings: Mean Pooling, Deep Sets, 
+Self-Attention, Improved Deep Sets, and Improved Self-Attention. Additionally, it now includes 
+PCA visualization for each method to understand how conformers are being clustered.
+
+The module separates scalar and vector components of the embeddings and processes them separately 
+to maintain equivariance properties. It includes an additional step to average results across all 
+batches of a single ensemble.
 
 New features:
 - PCA visualization for each embedding combination method
@@ -17,8 +18,8 @@ New features:
 - Improved error handling and input validation
 
 Author: Utkarsh Sharma
-Version: 1.3.0
-Date: 07-26-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Classes:
@@ -50,18 +51,21 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.0.0: Added GPU support
     - v1.3.0: Added PCA visualization for each embedding combination method
     - v1.2.0: Added process_ensemble_batches function for ensemble-level averaging
     - v1.1.0: Improved handling of scalar and vector components
     - v1.0.0: Initial release with Mean Pooling, Deep Sets, and Self-Attention methods
 
 TODO:
+    - Need to handle the case where the user only wants the scalar part as output after the CustomNonLinearReadout layer
     - Implement GPU acceleration for large ensemble processing
     - Add support for custom combining methods
 """
 
 import torch
 import torch.nn as nn
+import numpy as np
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
@@ -434,7 +438,7 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict[str, 
     print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
     print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
     
-    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim)
+    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device)
     results = combiner(conformer_embeddings)
 
     return results
@@ -449,7 +453,8 @@ def process_ensemble_batches(batch_embeddings: list[torch.Tensor]) -> dict[str, 
     Returns:
         dict[str, tuple[torch.Tensor, torch.Tensor]]: Dictionary of processed embeddings for each method.
     """
-    all_conformers = torch.cat(batch_embeddings, dim=0)
+    device = batch_embeddings[0].device 
+    all_conformers = torch.cat(batch_embeddings, dim=0).to(device)
     results = process_conformer_ensemble(all_conformers)
     return results
 
@@ -464,6 +469,9 @@ def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]
         None
     """
     for method, (scalar, vector) in embeddings.items():
+        scalar = scalar.cpu()
+        vector = vector.cpu()
+
         # Combine scalar and vector embeddings
         combined = torch.cat([scalar, vector.reshape(vector.shape[0], -1)], dim=1)
         
@@ -481,3 +489,68 @@ def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]
         plt.close()
 
         print(f"PCA visualization for {method} saved as '{method}_pca_visualization.png'")
+
+def move_to_device(obj, device):
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    elif isinstance(obj, dict):
+        return {key: move_to_device(value, device) for key, value in obj.items()}
+    else:
+        return obj
+    
+
+# def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]], ensemble_ids: torch.Tensor):
+#     """
+#     Perform PCA and visualize the embeddings for each method, color-coded by ensemble.
+
+#     Args:
+#         embeddings (dict[str, tuple[torch.Tensor, torch.Tensor]]): Dictionary of embeddings for each method.
+#         ensemble_ids (torch.Tensor): Tensor containing ensemble IDs for each conformer.
+
+#     Returns:
+#         None
+#     """
+#     unique_ensembles = torch.unique(ensemble_ids)
+#     num_ensembles = len(unique_ensembles)
+#     colors = plt.cm.rainbow(np.linspace(0, 1, num_ensembles))
+    
+#     for method, (scalar, vector) in embeddings.items():
+#         # Combine scalar and vector embeddings
+#         combined = torch.cat([scalar, vector.reshape(vector.shape[0], -1)], dim=1)
+        
+#         # Perform PCA
+#         pca = PCA(n_components=2)
+#         pca_result = pca.fit_transform(combined.detach().numpy())
+        
+#         # Ensure ensemble_ids matches the number of data points
+#         if len(ensemble_ids) != pca_result.shape[0]:
+#             print(f"Warning: Number of ensemble IDs ({len(ensemble_ids)}) doesn't match number of data points ({pca_result.shape[0]})")
+#             ensemble_ids = ensemble_ids[:pca_result.shape[0]]  # Truncate if necessary
+        
+#         # Visualize
+#         plt.figure(figsize=(12, 10))
+        
+#         for i, ensemble_id in enumerate(unique_ensembles):
+#             mask = ensemble_ids == ensemble_id
+#             if mask.sum() > 0:  # Only plot if there are points for this ensemble
+#                 plt.scatter(
+#                     pca_result[mask, 0], 
+#                     pca_result[mask, 1], 
+#                     c=[colors[i]], 
+#                     label=f'Ensemble {ensemble_id.item()}',
+#                     alpha=0.7
+#                 )
+        
+#         plt.title(f'PCA Visualization of {method} Embeddings')
+#         plt.xlabel('First Principal Component')
+#         plt.ylabel('Second Principal Component')
+#         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+#         plt.tight_layout()
+#         plt.savefig(f'{OUTPUT_PATH}/{method}_pca_visualization.png', dpi=300, bbox_inches='tight')
+#         plt.close()
+
+#         print(f"PCA visualization for {method} saved as '{method}_pca_visualization.png'")
