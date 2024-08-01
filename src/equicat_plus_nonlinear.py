@@ -1,7 +1,7 @@
 """
-EQUICAT Plus Non-Linear Readout Module
+EQUICAT Plus Non-Linear Readout Module (GPU-enabled version)
 
-This module extends the EQUICAT (Equivariant Catalysis) model with a custom
+This module extends the EQUICAT model with a custom
 non-linear readout layer. It provides two main classes:
 
 1. CustomNonLinearReadout: A custom readout layer that applies a series of
@@ -13,13 +13,14 @@ The module is designed to preserve equivariance while allowing for more
 complex, non-linear processing of molecular representations.
 
 New features:
+- GPU support for all operations
 - Extensive debug printing throughout the forward pass
 - Detailed shape and content logging for intermediate tensors
 - Enhanced forward pass summary including non-linear readout details
 
 Author: Utkarsh Sharma
-Version: 1.1.0
-Date: 07-26-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -28,12 +29,14 @@ Dependencies:
     - equicat (custom package)
 
 Usage:
-    model = EQUICATPlusNonLinearReadout(model_config, z_table)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     output = model(input_dict)
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.0.0: Added GPU support and ensured compatibility with updated equicat.py and train.py
     - v1.1.0: Added extensive debug printing and enhanced forward pass summary
     - v1.0.0: Initial implementation of EQUICAT Plus Non-Linear Readout
 """
@@ -42,7 +45,7 @@ import torch
 import torch.nn as nn
 from e3nn import o3
 from e3nn import nn as e3nn_nn
-from equicat import EQUICAT
+from equicat import EQUICAT, move_to_device
 
 class CustomNonLinearReadout(nn.Module):
     """
@@ -70,7 +73,7 @@ class CustomNonLinearReadout(nn.Module):
 
         # First linear layer
         self.linear_1 = o3.Linear(irreps_in=self.irreps_in, irreps_out=hidden_irreps)
-        
+
         # First non-linearity
         self.non_linearity_1 = e3nn_nn.Activation(
             irreps_in=hidden_irreps,
@@ -107,8 +110,7 @@ class CustomNonLinearReadout(nn.Module):
         x = self.non_linearity_2(x)
         x = self.linear_3(x)
         
-        # Debug prints
-        # print(f"Output shape: {x.shape}")
+        print(f"Output shape from CustomNonLinearReadout: {x.shape}")
         
         return x
     
@@ -172,14 +174,40 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         Returns:
             torch.Tensor: Final output after non-linear readout.
         """
+        # Ensure input_dict is on the correct device
+        device = next(self.parameters()).device
+        input_dict = move_to_device(input_dict, device)
+        
         # Get output from EQUICAT
         equicat_output = self.equicat(input_dict)
         print(f"EQUICAT output shape: {equicat_output.shape}")
-        print(f"EQUICAT output: {equicat_output}")
+        print(f"EQUICAT output device: {equicat_output.device}")
         
         # Apply NonLinearReadout
         final_output = self.non_linear_readout(equicat_output)
         print(f"Final output shape after NonLinearReadout: {final_output.shape}")
-        print(f"Final output: {final_output}")
+        print(f"Final output device: {final_output.device}")
         
         return final_output
+
+def move_to_device(obj, device):
+    """
+    Recursively moves an object to the specified device.
+
+    Args:
+        obj: The object to move (can be a tensor, list, tuple, or dict)
+        device: The device to move the object to
+
+    Returns:
+        The object moved to the specified device
+    """
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    elif isinstance(obj, dict):
+        return {key: move_to_device(value, device) for key, value in obj.items()}
+    else:
+        return obj

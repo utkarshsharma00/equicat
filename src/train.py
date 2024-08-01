@@ -1,23 +1,26 @@
 """
-EQUICAT Model Training Script
+EQUICAT Model Training Script (GPU-enabled version)
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
 training loop, logging functionality, early stopping, and robust error handling.
+It now supports GPU acceleration using CUDA.
 
 Key features:
-1. Customizable logging setup with detailed gradient and loss tracking
-2. Dynamic calculation of average neighbors and unique atomic numbers
-3. Contrastive loss for semi-supervised learning
-4. Gradient clipping and comprehensive logging during training
-5. Configurable model parameters and training hyperparameters
-6. Total runtime measurement
-7. Early stopping to prevent overfitting
-8. Robust error handling and NaN detection
+1. GPU acceleration with CUDA support
+2. Customizable logging setup with detailed gradient and loss tracking
+3. Dynamic calculation of average neighbors and unique atomic numbers
+4. Contrastive loss for semi-supervised learning
+5. Gradient clipping and comprehensive logging during training
+6. Configurable model parameters and training hyperparameters
+7. Total runtime measurement
+8. Early stopping to prevent overfitting
+9. Robust error handling and NaN detection
+10. GPU memory tracking
 
 Author: Utkarsh Sharma
-Version: 1.4.0
-Date: 07-22-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -32,6 +35,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.0.0: Added GPU support with CUDA
     - v1.4.0: Added robust error handling, gradient clipping, and NaN detection
     - v1.3.0: Implemented early stopping
     - v1.2.0: Added total runtime measurement and made constants global
@@ -65,18 +69,31 @@ from contrastive_loss import contrastive_loss
 from conformer_ensemble_embedding_combiner import process_conformer_ensemble
 
 # Global constants
+# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
+# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
 NUM_ENSEMBLES = 2
 CUTOFF = 5.0
-NUM_EPOCHS = 10
-BATCH_SIZE = 16
+NUM_EPOCHS = 1
+BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 EARLY_STOPPING_PATIENCE = 10
 EARLY_STOPPING_DELTA = 1e-4
 GRADIENT_CLIP_VALUE = 1.0
 EPSILON = 1e-8
 VISUALIZATION_INTERVAL = 1
+
+def get_device():
+    """
+    Select the best available device (CUDA if available, else CPU).
+
+    Returns:
+        torch.device: The selected device
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 def setup_logging(log_file):
     """
@@ -101,12 +118,13 @@ def setup_logging(log_file):
         ]
     )
 
-def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset):
+def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     """
     Calculate the average number of neighbors and unique atomic numbers in the dataset.
 
     Args:
         dataset (ConformerDataset): The dataset to analyze.
+        device (torch.device): The device to perform calculations on.
 
     Returns:
         tuple: A tuple containing:
@@ -117,17 +135,18 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset):
     total_atoms = 0
     unique_atomic_numbers = OrderedDict()
     
-    for batch_conformers, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE):
+    for batch_conformers, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE, device=device):
         for conformer in batch_conformers:
+            conformer = conformer.to(device)
             total_neighbors += conformer.edge_index.shape[1]
             total_atoms += conformer.positions.shape[0]
-            for atomic_number in conformer.atomic_numbers.tolist():
+            for atomic_number in conformer.atomic_numbers.cpu().tolist():
                 unique_atomic_numbers[atomic_number] = None  # Using OrderedDict to maintain order
     
     avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
     return avg_neighbors, list(unique_atomic_numbers.keys())
 
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
+def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
     """
     Train the EQUICAT model using contrastive loss with early stopping.
 
@@ -136,14 +155,15 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
         z_table (AtomicNumberTable): Table of atomic numbers.
         conformer_ensemble (ConformerLibrary): Library of conformers for training.
         cutoff (float): Cutoff distance for atomic interactions.
+        device (torch.device): The device to perform training on.
 
     Returns:
         EQUICATPlusNonLinearReadout: The trained EQUICAT model.
     """
-    # Initialize model
-    model = EQUICATPlusNonLinearReadout(model_config, z_table)
+    # Initialize model and move to device
+    model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
-    logging.info("Model initialized")
+    logging.info(f"Model initialized and moved to {device}")
 
     # Initialize optimizer
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
@@ -164,7 +184,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
         batch_count = 0
 
         with detect_anomaly():
-            for batch_conformers, _, _, ensemble_id in process_data(dataset, batch_size=BATCH_SIZE):
+            for batch_conformers, _, _, ensemble_id in process_data(dataset, batch_size=BATCH_SIZE, device=device):
                 optimizer.zero_grad()
 
                 embeddings = []
@@ -178,14 +198,14 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
                     output = model(input_dict)
                     embeddings.append(output)
 
-                embeddings = torch.stack(embeddings)
-                batch_ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=embeddings.device)
+                embeddings = torch.stack(embeddings).to(device)
+                ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=device)
 
-                loss = contrastive_loss(embeddings, batch_ensemble_ids)
+                loss = contrastive_loss(embeddings, ensemble_ids)
 
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
                 logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item():.6f}")
-                logging.info(f"Ensemble IDs: {batch_ensemble_ids}")
+                logging.info(f"Ensemble IDs: {ensemble_ids}")
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     logging.error(f"NaN or Inf loss detected: {loss.item()}")
@@ -194,7 +214,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
                 loss.backward()
 
                 # Gradient clipping
-                nn.utils.clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+                clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
 
                 # Gradient check
                 for name, param in model.named_parameters():
@@ -213,6 +233,11 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
 
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}")
 
+                # Log GPU memory usage
+                if device.type == 'cuda':
+                    logging.info(f"GPU memory allocated: {torch.cuda.memory_allocated(device) / 1e6:.2f} MB")
+                    logging.info(f"GPU memory cached: {torch.cuda.memory_reserved(device) / 1e6:.2f} MB")
+
         avg_loss = total_loss / (batch_count + EPSILON)  # Add epsilon to prevent division by zero
         logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Average Loss: {avg_loss:.6f}")
 
@@ -229,8 +254,6 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff):
             model.load_state_dict(best_model)
             break
 
-        plt.close('all')
-
     logging.info("Training completed")
     return model
 
@@ -241,6 +264,10 @@ if __name__ == "__main__":
     setup_logging(f"{OUTPUT_PATH}/training.log")
     logging.info("Starting EQUICAT training")
 
+    # Get the device
+    device = get_device()
+    logging.info(f"Using device: {device}")
+
     # Load your conformer ensemble
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
@@ -249,7 +276,7 @@ if __name__ == "__main__":
     temp_dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES)
     
     # Calculate average number of neighbors and get unique atomic numbers
-    avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(temp_dataset)
+    avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(temp_dataset, device)
     np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
     logging.info("Initializing model configuration...")
     logging.info(f"Unique atomic numbers in dataset: {unique_atomic_numbers}")
@@ -280,7 +307,7 @@ if __name__ == "__main__":
     logging.info(f"Model configuration: {model_config}")
 
     # Train the model
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF)
+    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device)
 
     # Save the trained model
     torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
@@ -290,16 +317,3 @@ if __name__ == "__main__":
     end_time = time.time()
     total_runtime = end_time - start_time
     logging.info(f"Total runtime: {total_runtime:.2f} seconds")
-
-
-
-
-
-
-
-
-
-
-
-
-

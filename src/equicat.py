@@ -1,25 +1,26 @@
 """
-EQUICAT Model Implementation
+EQUICAT Model Implementation (GPU-enabled version)
 
 This module implements the EQUICAT model, a neural network architecture designed for 
 equivariant learning on molecular systems. It leverages the MACE framework to create 
 a model that respects the symmetries inherent in molecular data.
 
 Key features:
-1. Equivariant processing of molecular geometries
-2. Handling of variable-sized molecular inputs
-3. Incorporation of spherical harmonics for angular information
-4. Use of radial basis functions for distance information
-5. Implementation of symmetric contractions for feature aggregation
-6. Multiple interaction and product layers for deep learning
-7. Extensive debug printing and sanity checks throughout the forward pass
+1. GPU acceleration with CUDA support
+2. Equivariant processing of molecular geometries
+3. Handling of variable-sized molecular inputs
+4. Incorporation of spherical harmonics for angular information
+5. Use of radial basis functions for distance information
+6. Implementation of symmetric contractions for feature aggregation
+7. Multiple interaction and product layers for deep learning
+8. Extensive debug printing throughout the forward pass
 
 The EQUICAT class encapsulates the entire model, providing a forward method that 
 processes input molecular data through various stages of the network.
 
 Author: Utkarsh Sharma
-Version: 1.2.0
-Date: 07-26-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -34,6 +35,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.0.0: Added GPU support and ensured compatibility with updated equicat_plus_nonlinear.py and train.py
     - v1.2.0: Added extensive debug printing and sanity checks throughout the forward pass
     - v1.1.0: Added support for multiple interaction and product layers
     - v1.0.0: Initial implementation of EQUICAT model
@@ -49,7 +51,6 @@ import torch.nn.functional
 from mace import modules, tools
 from mace.tools import torch_geometric
 from mace.tools.scatter import scatter_sum
-from torch_scatter import scatter_add
 from torch_geometric.utils import to_dense_batch
 
 class EQUICAT(torch.nn.Module):
@@ -65,7 +66,7 @@ class EQUICAT(torch.nn.Module):
             None
         """
         super(EQUICAT, self).__init__()
-        model_config['atomic_numbers'] = torch.tensor(z_table.zs)
+        model_config['atomic_numbers'] = torch.tensor(z_table.zs).cpu()  # Ensure it's on CPU
         self.model = modules.MACE(**model_config)
         self.z_table = z_table
         
@@ -112,6 +113,7 @@ class EQUICAT(torch.nn.Module):
             torch.Tensor: Processed node features.
         """
         torch.set_printoptions(profile="full")
+
         # Extract relevant information from the input dictionary
         positions = input_dict['positions']
         atomic_numbers = input_dict['atomic_numbers']
@@ -120,12 +122,17 @@ class EQUICAT(torch.nn.Module):
         print(f"Processing a new conformer")
         print("-" * 28)
         print(f"Positions shape: {positions.shape}")
-        print(f"Positions:\n", positions)
         print(f"Edge index shape: {edge_index.shape}")
-        print(f"Eedge indices:\n{edge_index}")
 
         try:
-            indices = tools.utils.atomic_numbers_to_indices(atomic_numbers, z_table=self.z_table)
+            # Move atomic_numbers to CPU before conversion
+            atomic_numbers_cpu = atomic_numbers.cpu()
+            
+            indices = tools.utils.atomic_numbers_to_indices(atomic_numbers_cpu, z_table=self.z_table)
+            
+            # Move indices back to the same device as the input
+            indices = torch.tensor(indices, device=atomic_numbers.device)
+            
         except ValueError as e:
             print(f"Warning: Unexpected atomic number encountered. Error: {e}")
             print(f"Unique atomic numbers in input: {torch.unique(atomic_numbers)}")
@@ -147,26 +154,21 @@ class EQUICAT(torch.nn.Module):
         # Compute edge attributes using spherical harmonics
         edge_attrs = self.model.spherical_harmonics(vectors)
         print("Edge attributes shape:", edge_attrs.shape)
-        print("Edge attributes:\n", edge_attrs)
 
         # Compute node attributes using one-hot encoding
-        indices = tools.utils.atomic_numbers_to_indices(atomic_numbers, z_table=self.z_table)
         node_attrs = tools.torch_tools.to_one_hot(
-            torch.tensor(indices, dtype=torch.long).unsqueeze(-1),
+            indices.unsqueeze(-1),
             num_classes=len(self.z_table),
         )
         print("Node attributes shape:", node_attrs.shape)
-        print("Node attributes:\n", node_attrs)
 
         # Compute radial embedding
         edge_feats = self.model.radial_embedding(lengths, node_attrs, edge_index, atomic_numbers)
         print("Edge features shape:", edge_feats.shape)
-        print("Edge features:\n", edge_feats)
 
         # Compute initial node features using the node embedding block
         node_feats = self.model.node_embedding(node_attrs)
         print("Initial Node features shape:", node_feats.shape)
-        print("Initial Node features:\n", node_feats)
 
         # Process through multiple MACE layers
         for i in range(self.num_interactions):
@@ -185,6 +187,27 @@ class EQUICAT(torch.nn.Module):
             node_feats = self.product_layers[i](node_feats=node_feats, sc=None, node_attrs=node_attrs)
 
             print(f"Node features after layer {i+1} shape:", node_feats.shape)
-            print(f"Node features after layer {i+1}:\n", node_feats)
 
         return node_feats
+
+def move_to_device(obj, device):
+    """
+    Recursively moves an object to the specified device.
+
+    Args:
+        obj: The object to move (can be a tensor, list, tuple, or dict)
+        device: The device to move the object to
+
+    Returns:
+        The object moved to the specified device
+    """
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    elif isinstance(obj, dict):
+        return {key: move_to_device(value, device) for key, value in obj.items()}
+    else:
+        return obj

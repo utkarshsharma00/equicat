@@ -1,9 +1,9 @@
 """
-Conformer Data Loader and Processor for EQUICAT
+Conformer Data Loader and Processor for EQUICAT (GPU-enabled version)
 
 This module provides comprehensive functionality for loading and processing conformer data
 for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
-and efficient processing functions.
+and efficient processing functions, now with GPU support.
 
 Key components:
 1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
@@ -12,7 +12,7 @@ Key components:
 4. process_data: Generator function for processing conformer data in batches.
 
 This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
-providing efficient and scalable data handling for molecular conformer analysis.
+providing efficient and scalable data handling for molecular conformer analysis on both CPU and GPU.
 
 Important Note:
 During sanity checking, it was discovered that the edge_index remained the same even when
@@ -29,8 +29,8 @@ Fix Implementation:
    ensuring unique connectivity information for each set of atomic positions.
 
 Author: Utkarsh Sharma
-Version: 1.2.0
-Date: 07-24-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -42,13 +42,15 @@ Dependencies:
 Usage:
     from data_loader import ConformerDataset, process_data
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = ConformerDataset(conformer_ensemble, cutoff)
-    for batch_data in process_data(dataset, batch_size=32):
+    for batch_data in process_data(dataset, batch_size=32, device=device):
         # Process batch_data
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.0.0: Added GPU support and ensured compatibility with updated equicat.py and train.py
     - v1.2.0: Fixed critical edge_index generation issue, ensuring unique connectivity for each conformer
     - v1.1.0: Added ensemble_id to process_data output
     - v1.0.0: Initial release
@@ -105,7 +107,7 @@ class ConformerDataset:
             atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
             print(f"Retrieved conformer ensemble {key} with {coords.shape[0]} conformers")
             print(f"Atomic Numbers: {atomic_numbers}")
-            print(f"Coords shape: {coords.shape}")  # Should be (num_conformers, num_atoms, 3)
+            print(f"Coords shape: {coords.shape}") # Should be (num_conformers, num_atoms, 3)
 
             z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
 
@@ -164,13 +166,14 @@ def custom_collate(batch):
     keys = [key for _, key in batch]
     return Batch.from_data_list(all_conformers), keys
 
-def process_data(conformer_dataset, batch_size=32):
+def process_data(conformer_dataset, batch_size=32, device=torch.device("cpu")):
     """
-    Process conformer data in batches.
+    Process conformer data in batches, with support for GPU processing.
 
     Args:
         conformer_dataset: The ConformerDataset to process.
         batch_size (int): Number of conformers to process in each batch.
+        device (torch.device): The device to move the data to (CPU or GPU).
 
     Yields:
         tuple: Batch of conformers, unique atomic numbers, average number of neighbors and ensemble id.
@@ -198,15 +201,18 @@ def process_data(conformer_dataset, batch_size=32):
 
             print(f"\nBatch {total_batches} in Ensemble: {key}")
             print(f"Number of conformers in this batch: {len(batch_conformers)}")
-            
+
             #! Sanity checks
             # for j, conformer in enumerate(batch_conformers):
             #     print(f"Conformer {j} positions shape: {conformer.positions.shape}")
             #     print(f"Conformer {j} positions:\n {conformer.positions}")
+            
+            # Move batch_conformers to the specified device
+            batch_conformers = [conformer.to(device) for conformer in batch_conformers]
 
             unique_atomic_numbers = []
             for conformer in batch_conformers:
-                for atomic_number in conformer.atomic_numbers:
+                for atomic_number in conformer.atomic_numbers.cpu():  # Move to CPU for processing
                     if atomic_number.item() not in unique_atomic_numbers:
                         unique_atomic_numbers.append(atomic_number.item())
 
@@ -222,3 +228,25 @@ def process_data(conformer_dataset, batch_size=32):
 
     print(f"\nTotal number of batches processed: {total_batches}")
     print(f"Total number of conformers processed: {total_conformers}")
+
+def move_to_device(obj, device):
+    """
+    Recursively moves an object to the specified device.
+
+    Args:
+        obj: The object to move (can be a tensor, list, tuple, or dict)
+        device: The device to move the object to
+
+    Returns:
+        The object moved to the specified device
+    """
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    elif isinstance(obj, dict):
+        return {key: move_to_device(value, device) for key, value in obj.items()}
+    else:
+        return obj

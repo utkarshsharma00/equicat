@@ -1,5 +1,5 @@
 """
-Contrastive Loss Implementation for Semi-Supervised Learning of Molecular Conformers
+Contrastive Loss Implementation for Semi-Supervised Learning of Molecular Conformers (GPU-enabled version)
 
 This module implements an advanced contrastive loss function for semi-supervised learning
 in the context of molecular conformer analysis. The contrastive loss encourages
@@ -7,6 +7,7 @@ embeddings of conformers from the same ensemble to be close together in the embe
 while pushing embeddings of conformers from different ensembles apart.
 
 Key Features:
+- GPU support for all operations
 - Handles batch processing of conformer embeddings
 - Supports variable number of atoms per conformer
 - Utilizes efficient PyTorch operations for scalability
@@ -22,19 +23,18 @@ where:
 - margin is a hyperparameter defining the minimum distance between embeddings of different ensembles
 
 Author: Utkarsh Sharma
-Version: 1.2.0
-Date: 07-22-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 08-01-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-    - Python 3.7+
+    - Python 3.10+
     - PyTorch 1.9+
-    - NumPy 1.20+ (for example usage)
 
 Usage:
     from contrastive_loss import contrastive_loss
 
-    # Prepare your data
+    # Prepare your data (assuming it's already on the correct device)
     embeddings = torch.tensor(...)  # shape: (batch_size, num_atoms, embedding_dim)
     ensemble_ids = torch.tensor(...)  # shape: (batch_size,)
 
@@ -48,6 +48,7 @@ Usage:
 For a complete example, refer to the `main()` function in this file.
 
 Change Log:
+    - v2.0.0: Added GPU support and ensured compatibility with updated equicat.py and train.py
     - v1.2.0: Added robust error handling and stability improvements
     - v1.1.0: Updated to handle batch processing of conformer embeddings
     - v1.0.0: Initial implementation of contrastive loss for molecular conformers
@@ -87,6 +88,10 @@ def contrastive_loss(embeddings: torch.Tensor, ensemble_ids: torch.Tensor, margi
     if embeddings.shape[0] != ensemble_ids.shape[0]:
         raise ValueError("Number of embeddings must match number of ensemble IDs")
 
+    # Ensure inputs are on the same device
+    device = embeddings.device
+    ensemble_ids = ensemble_ids.to(device)
+
     # Flatten embeddings to (batch_size, num_atoms * embedding_dim)
     flat_embeddings = embeddings.view(embeddings.shape[0], -1)
 
@@ -111,3 +116,42 @@ def contrastive_loss(embeddings: torch.Tensor, ensemble_ids: torch.Tensor, margi
     loss = loss.sum() / (len(ensemble_ids) * (len(ensemble_ids) - 1)) + EPSILON
     
     return loss
+
+def move_to_device(obj, device):
+    """
+    Recursively moves an object to the specified device.
+
+    Args:
+        obj: The object to move (can be a tensor, list, tuple, or dict)
+        device: The device to move the object to
+
+    Returns:
+        The object moved to the specified device
+    """
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    elif isinstance(obj, list):
+        return [move_to_device(item, device) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(move_to_device(item, device) for item in obj)
+    elif isinstance(obj, dict):
+        return {key: move_to_device(value, device) for key, value in obj.items()}
+    else:
+        return obj
+
+# Example usage
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Generate some random embeddings and ensemble IDs
+    embeddings = torch.randn(10, 5, 3).to(device)  # 10 conformers, 5 atoms, 3D embeddings
+    ensemble_ids = torch.randint(0, 3, (10,)).to(device)  # 3 different ensembles
+    
+    # Compute the loss
+    loss = contrastive_loss(embeddings, ensemble_ids)
+    
+    print(f"Computed loss: {loss.item()}")
+    print(f"Loss device: {loss.device}")
+
+if __name__ == "__main__":
+    main()
