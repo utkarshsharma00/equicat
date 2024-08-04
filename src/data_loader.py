@@ -68,7 +68,10 @@ TODO:
 """
 
 import torch
+import random
 import molli as ml
+import torch.utils.data
+from typing import List, Tuple
 from mace import data, tools
 from torch_geometric.data import Data, Batch
 
@@ -176,75 +179,6 @@ def custom_collate(batch):
     all_conformers = [item for sublist, _ in batch for item in sublist]
     keys = [key for _, key in batch]
     return Batch.from_data_list(all_conformers), keys
-
-# def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda")):
-#     """
-#     Process conformer data in batches, with support for GPU processing.
-
-#     Args:
-#         conformer_dataset: The ConformerDataset to process.
-#         batch_size (int): Number of conformers to process in each batch.
-#         device (torch.device): The device to move the data to (CPU or GPU).
-
-#     Yields:
-#         tuple: Batch of conformers, unique atomic numbers, average number of neighbors and ensemble id.
-#     """
-#     total_batches = 0
-#     total_conformers = 0
-
-#     data_loader = torch.utils.data.DataLoader(
-#         dataset=conformer_dataset,
-#         batch_size=1,
-#         shuffle=False,
-#         collate_fn=lambda x: x[0]
-#     )
-
-#     for ensemble_id, (atomic_data_list, key) in enumerate(data_loader):
-#         num_conformers = len(atomic_data_list)
-#         total_conformers += num_conformers
-
-#         print(f"\nProcessing Conformer Ensemble: {key}")
-#         print(f"Number of conformers in this ensemble: {num_conformers}")
-
-#         for i in range(0, num_conformers, batch_size):
-#             batch_conformers = atomic_data_list[i:i+batch_size]
-#             total_batches += 1
-
-#             print(f"\nBatch {total_batches} in Ensemble: {key}")
-#             print(f"Number of conformers in this batch: {len(batch_conformers)}")
-
-#             #! Sanity checks
-#             # for j, conformer in enumerate(batch_conformers):
-#             #     print(f"Conformer {j} positions shape: {conformer.positions.shape}")
-#             #     print(f"Conformer {j} positions:\n {conformer.positions}")
-            
-#             # Move batch_conformers to the specified device
-#             batch_conformers = [conformer.to(device) for conformer in batch_conformers]
-
-#             unique_atomic_numbers = []
-#             for conformer in batch_conformers:
-#                 for atomic_number in conformer.atomic_numbers.cpu():  # Move to CPU for processing
-#                     if atomic_number.item() not in unique_atomic_numbers:
-#                         unique_atomic_numbers.append(atomic_number.item())
-
-#             avg_num_neighbors = sum(compute_avg_num_neighbors(conformer) for conformer in batch_conformers) / len(batch_conformers)
-        
-#             print(f"Unique Atomic Numbers: {unique_atomic_numbers}")
-#             print(f"Average number of neighbors: {avg_num_neighbors:.2f}")
-
-#             yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id
-
-#         print(f"\nFinished processing Conformer Ensemble: {key}")
-#         print("=" * 50)
-
-#     print(f"\nTotal number of batches processed: {total_batches}")
-#     print(f"Total number of conformers processed: {total_conformers}")
-
-
-import random
-import torch
-import torch.utils.data
-from typing import List, Tuple
 
 def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batch_size: int) -> Tuple[List[torch.Tensor], int]:
     """
