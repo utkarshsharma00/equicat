@@ -1,40 +1,47 @@
 """
-Conformer Data Loader and Processor for EQUICAT (GPU-enabled version)
+Conformer Data Loader and Processor for EQUICAT (GPU-enabled version with Conformer Padding)
 
 This module provides comprehensive functionality for loading and processing conformer data
 for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
-and efficient processing functions, now with GPU support.
+and efficient processing functions, now with GPU support and conformer padding.
 
 Key components:
 1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
 2. compute_avg_num_neighbors: Utility function to calculate average neighbors in a batch.
 3. custom_collate: Custom collation function for batching data.
-4. process_data: Generator function for processing conformer data in batches.
+4. process_data: Generator function for processing conformer data in batches with padding.
+5. pad_batch: Function to pad batches to a consistent size using random sampling.
 
 This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
 providing efficient and scalable data handling for molecular conformer analysis on both CPU and GPU.
 
-Important Note:
-During sanity checking, it was discovered that the edge_index remained the same even when
-the positions (xyz coordinates) of the conformers were changing. This was a critical error
-as the edge_index should reflect the unique connectivity of each conformer based on its
-specific atomic positions and the cutoff. The issue was resolved by using MACE's 
-AtomicData.from_config method to generate unique edge_index for each conformer, 
-ensuring that the connectivity is correctly updated for each set of atomic positions.
+New Feature:
+- Conformer Padding: Addresses the issue of variable conformer counts in molecular ensembles.
+  When a molecule has fewer conformers than the batch size, or when the last batch of an
+  ensemble is smaller than the desired batch size, the function pads the batch by randomly
+  sampling from the available conformers. This ensures consistent batch sizes across all
+  molecules and batches, which is crucial for stable training and accurate ensemble embeddings.
 
-Fix Implementation:
-1. In the ConformerDataset.__getitem__ method, we now use data.AtomicData.from_config
-   to create atomic data for each conformer separately.
-2. The edge_index is now directly obtained from the atomic_data object for each conformer,
-   ensuring unique connectivity information for each set of atomic positions.
+Problem Addressed:
+In the dataset, molecule ensembles have varying numbers of conformers (e.g., one molecule
+might have 12 conformers, while another has 54). When creating fixed-size batches (e.g.,
+size 16), some molecules or batches may have fewer conformers than the batch size. This
+inconsistency can cause issues in combining ensemble embeddings, as some batches might
+have less representation due to fewer conformers.
+
+Solution:
+The pad_batch function ensures that all batches have the same number of conformers by
+randomly sampling and duplicating conformers when necessary. This approach maintains
+consistent batch sizes while preserving the diversity of the original ensemble.
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 08-01-2024 (MM-DD-YYYY)
+Version: 2.1.0
+Date: 08-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
     - torch (>=1.9.0)
+    - numpy (>=1.20.0)
     - molli (>=0.1.0)
     - mace (custom package)
     - torch_geometric (>=2.0.0)
@@ -42,7 +49,6 @@ Dependencies:
 Usage:
     from data_loader import ConformerDataset, process_data
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = ConformerDataset(conformer_ensemble, cutoff)
     for batch_data in process_data(dataset, batch_size=32, device=device):
         # Process batch_data
@@ -50,10 +56,15 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v2.0.0: Added GPU support and ensured compatibility with updated equicat.py and train.py
-    - v1.2.0: Fixed critical edge_index generation issue, ensuring unique connectivity for each conformer
+    - v2.1.0: Added conformer padding to handle variable-sized ensembles
+    - v2.0.0: Added GPU support
+    - v1.2.0: Fixed critical edge_index generation issue
     - v1.1.0: Added ensemble_id to process_data output
     - v1.0.0: Initial release
+
+TODO:
+    - Implement weighted sampling for padding to further improve ensemble representation
+    - Add option for deterministic padding for reproducibility
 """
 
 import torch
@@ -166,9 +177,103 @@ def custom_collate(batch):
     keys = [key for _, key in batch]
     return Batch.from_data_list(all_conformers), keys
 
-def process_data(conformer_dataset, batch_size=32, device=torch.device("cpu")):
+# def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda")):
+#     """
+#     Process conformer data in batches, with support for GPU processing.
+
+#     Args:
+#         conformer_dataset: The ConformerDataset to process.
+#         batch_size (int): Number of conformers to process in each batch.
+#         device (torch.device): The device to move the data to (CPU or GPU).
+
+#     Yields:
+#         tuple: Batch of conformers, unique atomic numbers, average number of neighbors and ensemble id.
+#     """
+#     total_batches = 0
+#     total_conformers = 0
+
+#     data_loader = torch.utils.data.DataLoader(
+#         dataset=conformer_dataset,
+#         batch_size=1,
+#         shuffle=False,
+#         collate_fn=lambda x: x[0]
+#     )
+
+#     for ensemble_id, (atomic_data_list, key) in enumerate(data_loader):
+#         num_conformers = len(atomic_data_list)
+#         total_conformers += num_conformers
+
+#         print(f"\nProcessing Conformer Ensemble: {key}")
+#         print(f"Number of conformers in this ensemble: {num_conformers}")
+
+#         for i in range(0, num_conformers, batch_size):
+#             batch_conformers = atomic_data_list[i:i+batch_size]
+#             total_batches += 1
+
+#             print(f"\nBatch {total_batches} in Ensemble: {key}")
+#             print(f"Number of conformers in this batch: {len(batch_conformers)}")
+
+#             #! Sanity checks
+#             # for j, conformer in enumerate(batch_conformers):
+#             #     print(f"Conformer {j} positions shape: {conformer.positions.shape}")
+#             #     print(f"Conformer {j} positions:\n {conformer.positions}")
+            
+#             # Move batch_conformers to the specified device
+#             batch_conformers = [conformer.to(device) for conformer in batch_conformers]
+
+#             unique_atomic_numbers = []
+#             for conformer in batch_conformers:
+#                 for atomic_number in conformer.atomic_numbers.cpu():  # Move to CPU for processing
+#                     if atomic_number.item() not in unique_atomic_numbers:
+#                         unique_atomic_numbers.append(atomic_number.item())
+
+#             avg_num_neighbors = sum(compute_avg_num_neighbors(conformer) for conformer in batch_conformers) / len(batch_conformers)
+        
+#             print(f"Unique Atomic Numbers: {unique_atomic_numbers}")
+#             print(f"Average number of neighbors: {avg_num_neighbors:.2f}")
+
+#             yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id
+
+#         print(f"\nFinished processing Conformer Ensemble: {key}")
+#         print("=" * 50)
+
+#     print(f"\nTotal number of batches processed: {total_batches}")
+#     print(f"Total number of conformers processed: {total_conformers}")
+
+
+import random
+import torch
+import torch.utils.data
+from typing import List, Tuple
+
+def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batch_size: int) -> Tuple[List[torch.Tensor], int]:
     """
-    Process conformer data in batches, with support for GPU processing.
+    Pad a batch to the desired size by randomly sampling from the full ensemble.
+    If the full ensemble is smaller than the batch size, it will repeat conformers.
+    
+    Args:
+        batch: The current batch of conformers.
+        full_ensemble: The full list of conformers for the current molecule.
+        batch_size: The desired batch size.
+    
+    Returns:
+        Tuple of padded batch and number of added conformers.
+    """
+    num_to_add = batch_size - len(batch)
+    if num_to_add <= 0:
+        return batch, 0
+    
+    # If we need more conformers than available, we'll sample with replacement
+    if num_to_add > len(full_ensemble):
+        added_conformers = random.choices(full_ensemble, k=num_to_add)
+    else:
+        added_conformers = random.sample(full_ensemble, num_to_add)
+    
+    return batch + added_conformers, num_to_add
+
+def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda")):
+    """
+    Process conformer data in batches, with support for GPU processing and consistent batch sizes.
 
     Args:
         conformer_dataset: The ConformerDataset to process.
@@ -176,7 +281,7 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cpu")):
         device (torch.device): The device to move the data to (CPU or GPU).
 
     Yields:
-        tuple: Batch of conformers, unique atomic numbers, average number of neighbors and ensemble id.
+        tuple: Batch of conformers, unique atomic numbers, average number of neighbors, ensemble id, and number of added conformers.
     """
     total_batches = 0
     total_conformers = 0
@@ -194,19 +299,18 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cpu")):
 
         print(f"\nProcessing Conformer Ensemble: {key}")
         print(f"Number of conformers in this ensemble: {num_conformers}")
+        print(f"Batch size: {batch_size}")
 
         for i in range(0, num_conformers, batch_size):
             batch_conformers = atomic_data_list[i:i+batch_size]
+            batch_conformers, num_added = pad_batch(batch_conformers, atomic_data_list, batch_size)
             total_batches += 1
 
             print(f"\nBatch {total_batches} in Ensemble: {key}")
-            print(f"Number of conformers in this batch: {len(batch_conformers)}")
+            print(f"Number of conformers in this batch before padding: {len(atomic_data_list[i:i+batch_size])}")
+            print(f"Number of conformers in this batch after padding: {len(batch_conformers)}")
+            print(f"Number of randomly added conformers: {num_added}")
 
-            #! Sanity checks
-            # for j, conformer in enumerate(batch_conformers):
-            #     print(f"Conformer {j} positions shape: {conformer.positions.shape}")
-            #     print(f"Conformer {j} positions:\n {conformer.positions}")
-            
             # Move batch_conformers to the specified device
             batch_conformers = [conformer.to(device) for conformer in batch_conformers]
 
@@ -221,7 +325,7 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cpu")):
             print(f"Unique Atomic Numbers: {unique_atomic_numbers}")
             print(f"Average number of neighbors: {avg_num_neighbors:.2f}")
 
-            yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id
+            yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added
 
         print(f"\nFinished processing Conformer Ensemble: {key}")
         print("=" * 50)

@@ -1,26 +1,39 @@
 """
-EQUICAT Conformer Analysis Pipeline (GPU-enabled version)
+EQUICAT Conformer Analysis Pipeline (GPU-enabled version with Conformer Padding)
 
 This script serves as the main entry point for the EQUICAT conformer analysis pipeline,
-now with GPU support.
+now with GPU support and handling for variable-sized conformer ensembles.
 
 It orchestrates the entire process of loading conformer data, configuring the EQUICAT model, 
 generating embeddings, and applying various pooling methods to combine these embeddings.
 
 The pipeline consists of the following key stages:
-1. Data Loading: Retrieves conformer ensembles from the MOLLI library.
+1. Data Loading: Retrieves conformer ensembles from the MOLLI library with padding.
 2. Model Configuration: Sets up the EQUICAT model with appropriate parameters.
 3. Embedding Generation: Processes conformers through the EQUICAT model.
 4. Ensemble Pooling: Combines conformer embeddings using multiple techniques.
 5. Result Analysis: Outputs the processed embeddings along with their PCA visualizations 
-for downstream tasks.
+   for downstream tasks.
 
-This script ties together various modules and functions to create a comprehensive
-workflow for analyzing molecular conformers using equivariant neural networks.
+New Feature:
+- Conformer Padding Handling: The script now processes padded batches of conformers,
+  ensuring consistent batch sizes across all molecules and batches. This addresses
+  the issue of variable conformer counts in molecular ensembles.
+
+Problem Addressed:
+Molecule ensembles in the dataset have varying numbers of conformers. This variability
+can lead to inconsistent batch sizes and potentially biased ensemble representations
+when some molecules have fewer conformers than the batch size.
+
+Solution:
+The script now works with the padding mechanism implemented in data_loader.py. It processes
+padded batches, ensuring that all batches have the same number of conformers. This approach
+maintains consistent input sizes for the EQUICAT model while preserving the diversity of
+the original ensembles.
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 08-01-2024 (MM-DD-YYYY)
+Version: 2.1.0
+Date: 08-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -36,8 +49,9 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.1.0: Added support for processing padded conformer batches
     - v2.0.0: Added GPU support
-    - v1.2.0: Added extensive sanity checks and detailed embedding prints along with PCA visualizations
+    - v1.2.0: Added extensive sanity checks and PCA visualizations
     - v1.1.0: Added ensemble-level processing and improved batch handling
     - v1.0.0: Initial implementation of EQUICAT pipeline
 
@@ -45,6 +59,7 @@ TODO:
     - Implement command-line arguments for configurable parameters
     - Add logging functionality for better debugging and monitoring
     - Optimize memory usage for large-scale conformer processing
+    - Implement weighted ensemble calculations to account for conformer duplications
 """
 
 import torch
@@ -184,9 +199,6 @@ def process_and_print_ensemble(ensemble_batches, ensemble_id, device):
     visualize_embeddings(ensemble_embeddings)
 
 def main():
-    """
-    Main function to run the EQUICAT conformer analysis pipeline.
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -196,8 +208,9 @@ def main():
     current_ensemble_id = None
     ensemble_batches = []
 
-    for batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id in process_data(conformer_dataset, batch_size=BATCH_SIZE, device=device):
+    for batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added in process_data(conformer_dataset, batch_size=BATCH_SIZE, device=device):
         print(f"\nProcessing batch of {len(batch_conformers)} conformers from Ensemble {ensemble_id}")
+        print(f"Number of added conformers: {num_added}")
         
         # Sanity check each conformer in the batch
         for i, conformer in enumerate(batch_conformers):
@@ -237,7 +250,13 @@ def main():
             assert output.shape[0] == conformer.num_nodes, f"Output shape mismatch for conformer {i}"
 
         conformer_embeddings = torch.stack(conformer_embeddings)
-        ensemble_batches.append(conformer_embeddings)
+        
+        # Only add the original conformers to ensemble_batches
+        if num_added > 0:
+            original_batch_size = len(batch_conformers) - num_added
+            ensemble_batches.append(conformer_embeddings[:original_batch_size])
+        else:
+            ensemble_batches.append(conformer_embeddings)
 
         batch_embeddings = process_conformer_ensemble(conformer_embeddings)
         print("\nSanity check for batch embeddings:")

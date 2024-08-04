@@ -1,26 +1,42 @@
 """
-EQUICAT Model Training Script (GPU-enabled version)
+EQUICAT Model Training Script (GPU-enabled version with Conformer Padding)
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
 training loop, logging functionality, early stopping, and robust error handling.
-It now supports GPU acceleration using CUDA.
+It now supports GPU acceleration using CUDA and handles variable-sized conformer ensembles.
 
 Key features:
 1. GPU acceleration with CUDA support
-2. Customizable logging setup with detailed gradient and loss tracking
-3. Dynamic calculation of average neighbors and unique atomic numbers
-4. Contrastive loss for semi-supervised learning
-5. Gradient clipping and comprehensive logging during training
-6. Configurable model parameters and training hyperparameters
-7. Total runtime measurement
-8. Early stopping to prevent overfitting
-9. Robust error handling and NaN detection
-10. GPU memory tracking
+2. Conformer Padding: Handles variable-sized conformer ensembles
+3. Customizable logging setup with detailed gradient and loss tracking
+4. Dynamic calculation of average neighbors and unique atomic numbers
+5. Contrastive loss for semi-supervised learning
+6. Gradient clipping and comprehensive logging during training
+7. Configurable model parameters and training hyperparameters
+8. Total runtime measurement
+9. Early stopping to prevent overfitting
+10. Robust error handling and NaN detection
+11. GPU memory tracking
+
+New Feature:
+- Conformer Padding Handling: The training process now accommodates padded batches
+  of conformers, ensuring consistent batch sizes across all molecules and epochs.
+
+Problem Addressed:
+In the dataset, molecule ensembles have varying numbers of conformers. This variability
+can lead to inconsistent batch sizes during training, potentially causing instability
+in the learning process and biased model performance towards larger ensembles.
+
+Solution:
+The script now works with the padding mechanism implemented in data_loader.py. It processes
+padded batches during training, ensuring that all batches have the same number of conformers.
+This approach maintains consistent input sizes for the EQUICAT model while preserving the
+diversity of the original ensembles.
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 08-01-2024 (MM-DD-YYYY)
+Version: 2.1.0
+Date: 08-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -35,6 +51,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.1.0: Added support for training with padded conformer batches
     - v2.0.0: Added GPU support with CUDA
     - v1.4.0: Added robust error handling, gradient clipping, and NaN detection
     - v1.3.0: Implemented early stopping
@@ -46,6 +63,7 @@ TODO:
     - Implement learning rate scheduling
     - Add support for distributed training
     - Implement checkpointing for resuming training
+    - Implement weighted loss calculation to account for conformer duplications
 """
 
 import torch
@@ -76,7 +94,7 @@ OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
 NUM_ENSEMBLES = 2
 CUTOFF = 5.0
 NUM_EPOCHS = 1
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EARLY_STOPPING_PATIENCE = 10
 EARLY_STOPPING_DELTA = 1e-4
@@ -135,7 +153,7 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     total_atoms = 0
     unique_atomic_numbers = OrderedDict()
     
-    for batch_conformers, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE, device=device):
+    for batch_conformers, _, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE, device=device): #! added num_added over here
         for conformer in batch_conformers:
             conformer = conformer.to(device)
             total_neighbors += conformer.edge_index.shape[1]
@@ -184,7 +202,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
         batch_count = 0
 
         with detect_anomaly():
-            for batch_conformers, _, _, ensemble_id in process_data(dataset, batch_size=BATCH_SIZE, device=device):
+            for batch_conformers, _, _, ensemble_id, num_added in process_data(dataset, batch_size=BATCH_SIZE, device=device): #! added num_added over here
                 optimizer.zero_grad()
 
                 embeddings = []
@@ -201,11 +219,18 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
                 embeddings = torch.stack(embeddings).to(device)
                 ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=device)
 
-                loss = contrastive_loss(embeddings, ensemble_ids)
+                #* loss = contrastive_loss(embeddings, ensemble_ids)
 
+                if num_added > 0: #! added this block
+                    original_batch_size = len(batch_conformers) - num_added
+                    loss = contrastive_loss(embeddings[:original_batch_size], ensemble_ids[:original_batch_size])
+                else:
+                    loss = contrastive_loss(embeddings, ensemble_ids)
+                
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
                 logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item():.6f}")
                 logging.info(f"Ensemble IDs: {ensemble_ids}")
+                logging.info(f"Number of added conformers: {num_added}") #! added this line
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     logging.error(f"NaN or Inf loss detected: {loss.item()}")
