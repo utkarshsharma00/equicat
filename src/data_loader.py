@@ -1,42 +1,30 @@
 """
-Conformer Data Loader and Processor for EQUICAT (GPU-enabled version with Conformer Padding)
+Conformer Data Loader and Processor for EQUICAT (GPU-enabled version with Optional Conformer Padding)
 
 This module provides comprehensive functionality for loading and processing conformer data
 for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
-and efficient processing functions, now with GPU support and conformer padding.
+and efficient processing functions, now with GPU support and optional conformer padding.
 
 Key components:
 1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
 2. compute_avg_num_neighbors: Utility function to calculate average neighbors in a batch.
 3. custom_collate: Custom collation function for batching data.
-4. process_data: Generator function for processing conformer data in batches with padding.
-5. pad_batch: Function to pad batches to a consistent size using random sampling.
+4. process_data: Generator function for processing conformer data in batches with optional padding.
+5. pad_batch: Function to pad batches to a consistent size using random sampling when enabled.
 
 This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
 providing efficient and scalable data handling for molecular conformer analysis on both CPU and GPU.
 
 New Feature:
-- Conformer Padding: Addresses the issue of variable conformer counts in molecular ensembles.
-  When a molecule has fewer conformers than the batch size, or when the last batch of an
+- Optional Conformer Padding: Addresses the issue of variable conformer counts in molecular ensembles.
+  When enabled and a molecule has fewer conformers than the batch size, or when the last batch of an
   ensemble is smaller than the desired batch size, the function pads the batch by randomly
   sampling from the available conformers. This ensures consistent batch sizes across all
-  molecules and batches, which is crucial for stable training and accurate ensemble embeddings.
-
-Problem Addressed:
-In the dataset, molecule ensembles have varying numbers of conformers (e.g., one molecule
-might have 12 conformers, while another has 54). When creating fixed-size batches (e.g.,
-size 16), some molecules or batches may have fewer conformers than the batch size. This
-inconsistency can cause issues in combining ensemble embeddings, as some batches might
-have less representation due to fewer conformers.
-
-Solution:
-The pad_batch function ensures that all batches have the same number of conformers by
-randomly sampling and duplicating conformers when necessary. This approach maintains
-consistent batch sizes while preserving the diversity of the original ensemble.
+  molecules and batches when needed, which is crucial for stable training and accurate ensemble embeddings.
 
 Author: Utkarsh Sharma
-Version: 2.1.0
-Date: 08-03-2024 (MM-DD-YYYY)
+Version: 2.2.0
+Date: 08-08-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -50,13 +38,14 @@ Usage:
     from data_loader import ConformerDataset, process_data
     
     dataset = ConformerDataset(conformer_ensemble, cutoff)
-    for batch_data in process_data(dataset, batch_size=32, device=device):
+    for batch_data in process_data(dataset, batch_size=32, device=device, pad_batches=True):
         # Process batch_data
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v2.1.0: Added conformer padding to handle variable-sized ensembles
+    - v2.2.0: Added optional conformer padding via pad_batches parameter
+    - v2.1.0: Added support for processing padded conformer batches
     - v2.0.0: Added GPU support
     - v1.2.0: Fixed critical edge_index generation issue
     - v1.1.0: Added ensemble_id to process_data output
@@ -71,6 +60,7 @@ import torch
 import random
 import molli as ml
 import torch.utils.data
+import argparse
 from typing import List, Tuple
 from mace import data, tools
 from torch_geometric.data import Data, Batch
@@ -180,19 +170,22 @@ def custom_collate(batch):
     keys = [key for _, key in batch]
     return Batch.from_data_list(all_conformers), keys
 
-def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batch_size: int) -> Tuple[List[torch.Tensor], int]:
+def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batch_size: int, pad_batches: bool) -> Tuple[List[torch.Tensor], int]:
     """
-    Pad a batch to the desired size by randomly sampling from the full ensemble.
-    If the full ensemble is smaller than the batch size, it will repeat conformers.
+    Pad a batch to the desired size by randomly sampling from the full ensemble if padding is enabled.
     
     Args:
         batch: The current batch of conformers.
         full_ensemble: The full list of conformers for the current molecule.
         batch_size: The desired batch size.
+        pad_batches: Whether to pad batches or not.
     
     Returns:
         Tuple of padded batch and number of added conformers.
     """
+    if not pad_batches:
+        return batch, 0
+    
     num_to_add = batch_size - len(batch)
     if num_to_add <= 0:
         return batch, 0
@@ -205,14 +198,15 @@ def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batc
     
     return batch + added_conformers, num_to_add
 
-def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda")):
+def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda"), pad_batches=False):
     """
-    Process conformer data in batches, with support for GPU processing and consistent batch sizes.
+    Process conformer data in batches, with support for GPU processing and optional consistent batch sizes.
 
     Args:
         conformer_dataset: The ConformerDataset to process.
         batch_size (int): Number of conformers to process in each batch.
         device (torch.device): The device to move the data to (CPU or GPU).
+        pad_batches (bool): Whether to pad batches to ensure consistent size.
 
     Yields:
         tuple: Batch of conformers, unique atomic numbers, average number of neighbors, ensemble id, and number of added conformers.
@@ -234,16 +228,26 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda")):
         print(f"\nProcessing Conformer Ensemble: {key}")
         print(f"Number of conformers in this ensemble: {num_conformers}")
         print(f"Batch size: {batch_size}")
+        print(f"Padding enabled: {pad_batches}")
 
         for i in range(0, num_conformers, batch_size):
             batch_conformers = atomic_data_list[i:i+batch_size]
-            batch_conformers, num_added = pad_batch(batch_conformers, atomic_data_list, batch_size)
+            original_batch_size = len(batch_conformers)
+            
+            if pad_batches:
+                batch_conformers, num_added = pad_batch(batch_conformers, atomic_data_list, batch_size, pad_batches)
+                print(f"Padded batch: original size {original_batch_size}, padded size {len(batch_conformers)}, num_added {num_added}")
+            else:
+                num_added = 0
+                # print(f"Unpadded batch: size {len(batch_conformers)}")
+            
             total_batches += 1
 
             print(f"\nBatch {total_batches} in Ensemble: {key}")
-            print(f"Number of conformers in this batch before padding: {len(atomic_data_list[i:i+batch_size])}")
+            print(f"Number of conformers in this batch before padding: {original_batch_size}")
             print(f"Number of conformers in this batch after padding: {len(batch_conformers)}")
-            print(f"Number of randomly added conformers: {num_added}")
+            if pad_batches:
+                print(f"Number of randomly added conformers: {num_added}")
 
             # Move batch_conformers to the specified device
             batch_conformers = [conformer.to(device) for conformer in batch_conformers]

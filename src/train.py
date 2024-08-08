@@ -1,14 +1,14 @@
 """
-EQUICAT Model Training Script (GPU-enabled version with Conformer Padding)
+EQUICAT Model Training Script (GPU-enabled version with Optional Conformer Padding)
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
 training loop, logging functionality, early stopping, and robust error handling.
-It now supports GPU acceleration using CUDA and handles variable-sized conformer ensembles.
+It now supports GPU acceleration using CUDA and optional handling of variable-sized conformer ensembles.
 
 Key features:
 1. GPU acceleration with CUDA support
-2. Conformer Padding: Handles variable-sized conformer ensembles
+2. Optional Conformer Padding: Handles variable-sized conformer ensembles when enabled
 3. Customizable logging setup with detailed gradient and loss tracking
 4. Dynamic calculation of average neighbors and unique atomic numbers
 5. Contrastive loss for semi-supervised learning
@@ -20,23 +20,13 @@ Key features:
 11. GPU memory tracking
 
 New Feature:
-- Conformer Padding Handling: The training process now accommodates padded batches
-  of conformers, ensuring consistent batch sizes across all molecules and epochs.
-
-Problem Addressed:
-In the dataset, molecule ensembles have varying numbers of conformers. This variability
-can lead to inconsistent batch sizes during training, potentially causing instability
-in the learning process and biased model performance towards larger ensembles.
-
-Solution:
-The script now works with the padding mechanism implemented in data_loader.py. It processes
-padded batches during training, ensuring that all batches have the same number of conformers.
-This approach maintains consistent input sizes for the EQUICAT model while preserving the
-diversity of the original ensembles.
+- Optional Conformer Padding: The training process now accommodates optional padding of
+  conformer batches, ensuring consistent batch sizes across all molecules and epochs when enabled.
+  This feature can be controlled via a command-line argument.
 
 Author: Utkarsh Sharma
-Version: 2.1.0
-Date: 08-03-2024 (MM-DD-YYYY)
+Version: 2.2.0
+Date: 08-08-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -46,11 +36,12 @@ Dependencies:
     - molli (custom package) 
 
 Usage:
-    python train.py
+    python train.py [--pad_batches]
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.2.0: Added optional conformer padding via command-line argument
     - v2.1.0: Added support for training with padded conformer batches
     - v2.0.0: Added GPU support with CUDA
     - v1.4.0: Added robust error handling, gradient clipping, and NaN detection
@@ -74,6 +65,7 @@ import numpy as np
 import time
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import argparse
 from e3nn import o3
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
@@ -164,9 +156,9 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
     return avg_neighbors, list(unique_atomic_numbers.keys())
 
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
+def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches):
     """
-    Train the EQUICAT model using contrastive loss with early stopping.
+    Train the EQUICAT model using contrastive loss with early stopping and optional batch padding.
 
     Args:
         model_config (dict): Configuration for the EQUICAT model.
@@ -174,10 +166,17 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
         conformer_ensemble (ConformerLibrary): Library of conformers for training.
         cutoff (float): Cutoff distance for atomic interactions.
         device (torch.device): The device to perform training on.
+        pad_batches (bool): Whether to pad batches to a consistent size.
 
     Returns:
         EQUICATPlusNonLinearReadout: The trained EQUICAT model.
+
+    Note:
+        When pad_batches is True, the function will pad smaller batches to the specified
+        batch size. The loss calculation will only consider the original, non-padded
+        conformers to maintain training integrity.
     """
+    print(f"train_equicat called with pad_batches={pad_batches}")
     # Initialize model and move to device
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
@@ -202,7 +201,8 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
         batch_count = 0
 
         with detect_anomaly():
-            for batch_conformers, _, _, ensemble_id, num_added in process_data(dataset, batch_size=BATCH_SIZE, device=device): #! added num_added over here
+            for batch_conformers, _, _, ensemble_id, num_added in process_data(dataset, batch_size=BATCH_SIZE, device=device, pad_batches=pad_batches):
+                print(f"Batch received: {len(batch_conformers)} conformers, num_added: {num_added}")  # Debug print
                 optimizer.zero_grad()
 
                 embeddings = []
@@ -219,18 +219,17 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
                 embeddings = torch.stack(embeddings).to(device)
                 ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=device)
 
-                #* loss = contrastive_loss(embeddings, ensemble_ids)
-
-                if num_added > 0: #! added this block
+                if num_added > 0:
                     original_batch_size = len(batch_conformers) - num_added
                     loss = contrastive_loss(embeddings[:original_batch_size], ensemble_ids[:original_batch_size])
                 else:
                     loss = contrastive_loss(embeddings, ensemble_ids)
-                
+
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
                 logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item():.6f}")
                 logging.info(f"Ensemble IDs: {ensemble_ids}")
-                logging.info(f"Number of added conformers: {num_added}") #! added this line
+                if pad_batches:
+                    logging.info(f"Number of randomly added conformers: {num_added}")
 
                 if torch.isnan(loss) or torch.isinf(loss):
                     logging.error(f"NaN or Inf loss detected: {loss.item()}")
@@ -263,7 +262,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
                     logging.info(f"GPU memory allocated: {torch.cuda.memory_allocated(device) / 1e6:.2f} MB")
                     logging.info(f"GPU memory cached: {torch.cuda.memory_reserved(device) / 1e6:.2f} MB")
 
-        avg_loss = total_loss / (batch_count + EPSILON)  # Add epsilon to prevent division by zero
+        avg_loss = total_loss / (batch_count + EPSILON) # Add epsilon to prevent division by zero
         logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Average Loss: {avg_loss:.6f}")
 
         # Early stopping check
@@ -283,24 +282,24 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device):
     return model
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="EQUICAT Model Training")
+    parser.add_argument('--pad_batches', action='store_true', help='Enable batch padding')
+    args = parser.parse_args()
+    print(f"Parsed args.pad_batches: {args.pad_batches}")
     start_time = time.time()
 
-    # Set up logging
     setup_logging(f"{OUTPUT_PATH}/training.log")
     logging.info("Starting EQUICAT training")
 
-    # Get the device
     device = get_device()
     logging.info(f"Using device: {device}")
+    logging.info(f"Padding batches: {args.pad_batches}")
 
-    # Load your conformer ensemble
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
 
-    # Create a dataset to get unique atomic numbers and calculate avg_num_neighbors
     temp_dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES)
     
-    # Calculate average number of neighbors and get unique atomic numbers
     avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(temp_dataset, device)
     np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
     logging.info("Initializing model configuration...")
@@ -309,10 +308,8 @@ if __name__ == "__main__":
     logging.info(f"Initialized dataset with {NUM_ENSEMBLES} conformer ensembles")
     logging.info("Model initialization complete. Starting training...")
 
-    # Create z_table with unique atomic numbers
     z_table = tools.AtomicNumberTable(unique_atomic_numbers)
 
-    # Model configuration
     model_config = {
         "r_max": CUTOFF,
         "num_bessel": 8,
@@ -331,14 +328,11 @@ if __name__ == "__main__":
     }
     logging.info(f"Model configuration: {model_config}")
 
-    # Train the model
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device)
+    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches)
 
-    # Save the trained model
     torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
     logging.info("Model training completed and saved.")
 
-    # Calculate and log total runtime
     end_time = time.time()
     total_runtime = end_time - start_time
     logging.info(f"Total runtime: {total_runtime:.2f} seconds")
