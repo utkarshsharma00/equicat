@@ -1,5 +1,5 @@
 """
-EQUICAT Conformer Analysis Pipeline (GPU-enabled version with Optional Conformer Padding)
+EQUICAT Conformer Analysis Pipeline
 
 This script serves as the main entry point for the EQUICAT conformer analysis pipeline,
 now with GPU support and optional handling for variable-sized conformer ensembles.
@@ -163,16 +163,30 @@ def print_detailed_embeddings(embeddings, level="Batch"):
         print(f"    Vector embeddings shape: {vector.shape}")
         
         # Print first few scalar embeddings for each conformer
-        print(f"    Scalar embeddings (first 3 conformers, first 5 features):")
-        for i in range(min(3, scalar.shape[0])):
+        # print(f"    Scalar embeddings (first 3 conformers, first 5 features):")
+        # for i in range(min(3, scalar.shape[0])):
+        #     print(f"      Conformer {i}:")
+        #     print(scalar[i, :5])
+        
+        # Print all scalar embeddings for each conformer
+        print(f"    Scalar embeddings (all conformers, all features):")
+        for i in range(scalar.shape[0]):
             print(f"      Conformer {i}:")
-            print(scalar[i, :5])
+            print(scalar[i])
         
         # Print first few vector embeddings for each conformer
-        print(f"    Vector embeddings (first 3 conformers, first 3 features):")
-        for i in range(min(3, vector.shape[0])):
+        # print(f"    Vector embeddings (first 3 conformers, first 3 features):")
+        # for i in range(min(3, vector.shape[0])):
+        #     print(f"      Conformer {i}:")
+        #     print(vector[i, :3])
+
+        # Print all vector embeddings for each conformer
+        print(f"    Vector embeddings (all conformers, all features):")
+        for i in range(vector.shape[0]):
             print(f"      Conformer {i}:")
-            print(vector[i, :3])
+            print(vector[i])
+        
+        print("-" * 65)  # Separator between methods
 
 def process_and_print_ensemble(ensemble_batches, ensemble_id, device):
     """
@@ -185,9 +199,14 @@ def process_and_print_ensemble(ensemble_batches, ensemble_id, device):
     print(f"\nProcessing complete Ensemble {ensemble_id}")
     ensemble_embeddings = process_ensemble_batches(ensemble_batches)
     print("\nEnsemble Average Embeddings:")
-    sanity_check_embeddings(ensemble_embeddings)
-    print_detailed_embeddings(ensemble_embeddings, level="Ensemble")
-    visualize_embeddings(ensemble_embeddings)
+    for method, (scalar, vector) in ensemble_embeddings.items():
+        print(f"  {method}:")
+        print(f"    Scalar shape: {scalar.shape}")
+        print(f"    Vector shape: {vector.shape}")
+        print(f"    Scalar: {scalar.squeeze().tolist()}")
+        print(f"    Vector: {vector.squeeze().tolist()}")
+    
+    # visualize_embeddings(ensemble_embeddings)
 
 def main(pad_batches):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -201,7 +220,15 @@ def main(pad_batches):
     ensemble_batches = []
 
     for batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added in process_data(conformer_dataset, batch_size=BATCH_SIZE, device=device, pad_batches=pad_batches):
+
+        if current_ensemble_id is not None and current_ensemble_id != ensemble_id:
+
+            # Process the completed ensemble
+            process_and_print_ensemble(ensemble_batches, current_ensemble_id, device)
+            ensemble_batches = []
+
         print(f"\nProcessing batch of {len(batch_conformers)} conformers from Ensemble {ensemble_id}")
+
         if pad_batches:
             print(f"Number of randomly added conformers: {num_added}")
         
@@ -209,10 +236,6 @@ def main(pad_batches):
         for i, conformer in enumerate(batch_conformers):
             print(f"\nSanity check for conformer {i} in batch:")
             sanity_check_conformer(conformer)
-
-        if current_ensemble_id is not None and current_ensemble_id != ensemble_id:
-            process_and_print_ensemble(ensemble_batches, current_ensemble_id, device)
-            ensemble_batches = []
 
         z_table = tools.AtomicNumberTable(unique_atomic_numbers)
         atomic_energies = np.zeros(len(z_table), dtype=float)
@@ -253,6 +276,7 @@ def main(pad_batches):
         current_ensemble_id = ensemble_id
         print("=" * 50)
 
+    # Process the last ensemble
     if ensemble_batches:
         process_and_print_ensemble(ensemble_batches, current_ensemble_id, device)
 

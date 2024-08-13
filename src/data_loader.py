@@ -1,5 +1,5 @@
 """
-Conformer Data Loader and Processor for EQUICAT (GPU-enabled version with Optional Conformer Padding)
+Conformer Data Loader and Processor for EQUICAT
 
 This module provides comprehensive functionality for loading and processing conformer data
 for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
@@ -246,6 +246,7 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda"), 
             print(f"\nBatch {total_batches} in Ensemble: {key}")
             print(f"Number of conformers in this batch before padding: {original_batch_size}")
             print(f"Number of conformers in this batch after padding: {len(batch_conformers)}")
+            
             if pad_batches:
                 print(f"Number of randomly added conformers: {num_added}")
 
@@ -253,6 +254,7 @@ def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda"), 
             batch_conformers = [conformer.to(device) for conformer in batch_conformers]
 
             unique_atomic_numbers = []
+
             for conformer in batch_conformers:
                 for atomic_number in conformer.atomic_numbers.cpu():  # Move to CPU for processing
                     if atomic_number.item() not in unique_atomic_numbers:

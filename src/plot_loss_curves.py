@@ -2,8 +2,8 @@
 EQUICAT Plot Loss Curves
 
 This script provides interactive loss curves for analyzing the training process of the EQUICAT model. 
-It generates three types of interactive HTML plots:
-1. Average Loss per Epoch: Shows the trend of average loss across training epochs.
+It generates four types of interactive HTML plots:
+1. Total Loss, Positive Loss, and Negative Loss per Epoch: Shows the trend of these losses across training epochs.
 2. Average Batch Loss Across Epochs: Displays the average loss for each batch, computed across all epochs.
 3. Individual Batch Loss Across Epochs: Shows separate plots for each batch's loss across all epochs.
 
@@ -11,8 +11,8 @@ The script reads training data from a log file, processes it, and creates intera
 These visualizations allow users to hover over data points for detailed information and zoom/pan for closer inspection.
 
 Author: Utkarsh Sharma
-Version: 1.4.0
-Date: 07-28-2024 (MM-DD-YYYY)
+Version: 1.5.0
+Date: 08-13-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -23,6 +23,7 @@ Usage:
     python plot_loss_curves.py
 
 Change Log:
+    - v1.5.0: Added combined plot for Total, Positive, and Negative losses per epoch
     - v1.4.0: Ensured the batch_plots directory is completely cleared and recreated for each run
     - v1.3.0: Refactored to handle large datasets and organize output in subdirectories
     - v1.2.0: Added individual batch loss plots across epochs
@@ -34,24 +35,27 @@ TODO:
     - Add option to export plots as static images (PNG/SVG)
     - Implement error handling for missing or corrupted log files
     - Add functionality to compare multiple training runs
+    - Add smoothing option for loss curves
 """
 
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import numpy as np
 import plotly.io as pio
 import pandas as pd
 import re
-from collections import defaultdict
 import os
 import shutil
+from collections import defaultdict
+from plotly.subplots import make_subplots
 
 # Constants
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-LOG_FILE = os.path.join(OUTPUT_PATH, "training.log")
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output/loss_curves"
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/output/"
+LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
 
-def plot_average_loss_per_epoch(log_file):
+def plot_combined_losses_per_epoch(log_file):
     """
-    Plot the average loss per epoch from the training log.
+    Plot the total, positive, and negative losses per epoch from the training log.
     
     Args:
         log_file (str): Path to the training log file.
@@ -60,36 +64,95 @@ def plot_average_loss_per_epoch(log_file):
         None
     """
     epochs = []
-    avg_losses = []
+    total_losses = []
+    positive_losses = defaultdict(list)
+    negative_losses = []
     
-    pattern = re.compile(r"Epoch \[(\d+)/\d+\], Average Loss: ([\d.]+)")
+    total_pattern = re.compile(r"Epoch \[(\d+)/\d+\], Total Loss: ([\d.]+)")
+    negative_pattern = re.compile(r"Epoch \[(\d+)/\d+\], Negative Loss: ([\d.]+)")
+    positive_pattern = re.compile(r"Positive Loss: ([\d.]+)")
     
     with open(log_file, 'r') as f:
+        current_epoch = 0
         for line in f:
-            match = pattern.search(line)
-            if match:
-                epoch = int(match.group(1))
-                avg_loss = float(match.group(2))
+            total_match = total_pattern.search(line)
+            negative_match = negative_pattern.search(line)
+            positive_match = positive_pattern.search(line)
+            
+            if total_match:
+                epoch = int(total_match.group(1))
+                total_loss = float(total_match.group(2))
                 epochs.append(epoch)
-                avg_losses.append(avg_loss)
+                total_losses.append(total_loss)
+                current_epoch = epoch
+            
+            if negative_match:
+                negative_losses.append(float(negative_match.group(2)))
+            
+            if positive_match:
+                positive_losses[current_epoch].append(float(positive_match.group(1)))
+
+    # Calculate average positive loss for each epoch
+    avg_positive_losses = [
+        np.mean(positive_losses[epoch-1]) if epoch-1 in positive_losses else np.nan
+        for epoch in range(1, max(epochs) + 1)
+    ]
     
-    fig = go.Figure(data=go.Scatter(
-        x=epochs,
-        y=avg_losses,
-        mode='lines+markers',
-        marker=dict(size=10),
-        hovertemplate='Epoch: %{x}<br>Average Loss: %{y:.4f}<extra></extra>'
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=epochs, y=total_losses,
+        mode='lines+markers', name='Total Loss',
+        line=dict(color='blue', width=2, dash='solid'),
+        marker=dict(size=8, symbol='circle'),
+        hovertemplate='Epoch: %{x}<br>Total Loss: %{y:.4f}<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=epochs, y=avg_positive_losses,
+        mode='lines+markers', name='Avg Positive Loss',
+        line=dict(color='green', width=2, dash='dot'),
+        marker=dict(size=8, symbol='square'),
+        hovertemplate='Epoch: %{x}<br>Avg Positive Loss: %{y:.6f}<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=epochs, y=negative_losses,
+        mode='lines+markers', name='Negative Loss',
+        line=dict(color='red', width=2, dash='dash'),
+        marker=dict(size=8, symbol='diamond'),
+        hovertemplate='Epoch: %{x}<br>Negative Loss: %{y:.4f}<extra></extra>'
     ))
     
     fig.update_layout(
-        title='Average Loss per Epoch',
+        title='Losses per Epoch',
         xaxis_title='Epoch',
-        yaxis_title='Average Loss',
+        yaxis_title='Loss',
         xaxis=dict(tickmode='linear', tick0=1, dtick=1),
-        hovermode='closest'
+        hovermode='closest',
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
     )
     
-    pio.write_html(fig, file=os.path.join(OUTPUT_PATH, 'avg_loss_per_epoch.html'), auto_open=False)
+    pio.write_html(fig, file=os.path.join(OUTPUT_PATH, 'combined_losses_per_epoch.html'), auto_open=False)
+    print(f"Combined losses plot saved to {os.path.join(OUTPUT_PATH, 'combined_losses_per_epoch.html')}")
+    
+    # Print debug information
+    print(f"Total Loss data points: {len(total_losses)}")
+    print(f"Avg Positive Loss data points: {len(avg_positive_losses)}")
+    print(f"Negative Loss data points: {len(negative_losses)}")
+    
+    # Print average positive loss for each epoch
+    for epoch, avg_loss in enumerate(avg_positive_losses, start=1):
+        print(f"Epoch {epoch}: Average Positive Loss = {avg_loss:.6f}")
+
+    # Print total number of positive loss entries
+    total_positive_entries = sum(len(losses) for losses in positive_losses.values())
+    print(f"Total number of positive loss entries: {total_positive_entries}")
 
 def plot_average_batch_loss_across_epochs(log_file):
     """
@@ -220,7 +283,7 @@ def main():
         clear_output_directory(OUTPUT_PATH)
         clear_output_directory(os.path.join(OUTPUT_PATH, "batch_plots"))
 
-        plot_average_loss_per_epoch(LOG_FILE)
+        plot_combined_losses_per_epoch(LOG_FILE)
         plot_average_batch_loss_across_epochs(LOG_FILE)
         plot_individual_batch_loss_across_epochs(LOG_FILE)
         print("Visualization complete. Check the output directory for the generated HTML plots.")

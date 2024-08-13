@@ -1,5 +1,5 @@
 """
-Conformer Ensemble Embedding Combiner with PCA Visualization (GPU-enabled version)
+Conformer Ensemble Embedding Combiner with PCA Visualization
 
 This module provides advanced functionality to combine embeddings from multiple conformers of
 a molecule into a single representation, now with GPU support. 
@@ -18,8 +18,8 @@ New features:
 - Improved error handling and input validation
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 08-01-2024 (MM-DD-YYYY)
+Version: 2.1.0
+Date: 08-13-2024 (MM-DD-YYYY)
 License: MIT
 
 Classes:
@@ -51,6 +51,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v2.1.0: Fixed averaging of ensemble embeddings and added dummy code for sanity checking
     - v2.0.0: Added GPU support
     - v1.3.0: Added PCA visualization for each embedding combination method
     - v1.2.0: Added process_ensemble_batches function for ensemble-level averaging
@@ -456,11 +457,21 @@ def process_ensemble_batches(batch_embeddings: list[torch.Tensor]) -> dict[str, 
     device = batch_embeddings[0].device 
     all_conformers = torch.cat(batch_embeddings, dim=0).to(device)
     results = process_conformer_ensemble(all_conformers)
-    return results
+    
+    # Average the results across all conformers
+    averaged_results = {}
+
+    for method, (scalar, vector) in results.items():
+        averaged_scalar = scalar.mean(dim=0, keepdim=True)  # [1, scalar_dim]
+        averaged_vector = vector.mean(dim=0, keepdim=True)  # [1, vector_dim, 3]
+        averaged_results[method] = (averaged_scalar, averaged_vector)
+    
+    return averaged_results
 
 def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]]):
     """
-    Perform PCA and visualize the embeddings for each method.
+    Visualize the embeddings for each method.
+    If there's only one sample, we'll create a bar plot instead of PCA.
 
     Args:
         embeddings (dict[str, tuple[torch.Tensor, torch.Tensor]]): Dictionary of embeddings for each method.
@@ -469,26 +480,33 @@ def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]
         None
     """
     for method, (scalar, vector) in embeddings.items():
-        scalar = scalar.cpu()
-        vector = vector.cpu()
+        scalar = scalar.cpu().detach().squeeze()
+        vector = vector.cpu().detach().squeeze()
 
         # Combine scalar and vector embeddings
-        combined = torch.cat([scalar, vector.reshape(vector.shape[0], -1)], dim=1)
+        combined = torch.cat([scalar, vector.reshape(-1)])
         
-        # Perform PCA
-        pca = PCA(n_components=2)
-        pca_result = pca.fit_transform(combined.detach().numpy())
+        plt.figure(figsize=(10, 6))
         
-        # Visualize
-        plt.figure(figsize=(10, 8))
-        plt.scatter(pca_result[:, 0], pca_result[:, 1])
-        plt.title(f'PCA Visualization of {method} Embeddings')
-        plt.xlabel('First Principal Component')
-        plt.ylabel('Second Principal Component')
-        plt.savefig(f'{OUTPUT_PATH}/{method}_pca_visualization.png')
+        if combined.dim() == 1:  # Only one sample
+            plt.bar(range(len(combined)), combined.numpy())
+            plt.title(f'Embedding Values for {method}')
+            plt.xlabel('Feature Index')
+            plt.ylabel('Feature Value')
+            
+        else:  # Multiple samples
+            pca = PCA(n_components=2)
+            pca_result = pca.fit_transform(combined.numpy())
+            
+            plt.scatter(pca_result[:, 0], pca_result[:, 1])
+            plt.title(f'PCA Visualization of {method} Embeddings')
+            plt.xlabel('First Principal Component')
+            plt.ylabel('Second Principal Component')
+        
+        plt.savefig(f'{OUTPUT_PATH}/{method}_visualization.png')
         plt.close()
 
-        print(f"PCA visualization for {method} saved as '{method}_pca_visualization.png'")
+        print(f"Visualization for {method} saved as '{method}_visualization.png'")
 
 def move_to_device(obj, device):
     if torch.is_tensor(obj):
@@ -501,56 +519,163 @@ def move_to_device(obj, device):
         return {key: move_to_device(value, device) for key, value in obj.items()}
     else:
         return obj
+
+
+#! Dummy Code for Sanity Checking
+# import random
+# import torch
+# BATCH_SIZE = 6
+
+# def create_dummy_water_data(num_conformers: int, num_atoms: int = 3, scalar_dim: int = 8, vector_dim: int = 8, pad_to_batch_size: bool = False):
+#     total_dim = scalar_dim + vector_dim * 3
+#     dummy_data = torch.rand(num_conformers, num_atoms, total_dim)
     
-
-# def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]], ensemble_ids: torch.Tensor):
-#     """
-#     Perform PCA and visualize the embeddings for each method, color-coded by ensemble.
-
-#     Args:
-#         embeddings (dict[str, tuple[torch.Tensor, torch.Tensor]]): Dictionary of embeddings for each method.
-#         ensemble_ids (torch.Tensor): Tensor containing ensemble IDs for each conformer.
-
-#     Returns:
-#         None
-#     """
-#     unique_ensembles = torch.unique(ensemble_ids)
-#     num_ensembles = len(unique_ensembles)
-#     colors = plt.cm.rainbow(np.linspace(0, 1, num_ensembles))
+#     if pad_to_batch_size and num_conformers < BATCH_SIZE:
+#         pad_size = BATCH_SIZE - num_conformers
+#         padding = torch.zeros(pad_size, num_atoms, total_dim)
+#         dummy_data = torch.cat([dummy_data, padding], dim=0)
     
-#     for method, (scalar, vector) in embeddings.items():
-#         # Combine scalar and vector embeddings
-#         combined = torch.cat([scalar, vector.reshape(vector.shape[0], -1)], dim=1)
-        
-#         # Perform PCA
-#         pca = PCA(n_components=2)
-#         pca_result = pca.fit_transform(combined.detach().numpy())
-        
-#         # Ensure ensemble_ids matches the number of data points
-#         if len(ensemble_ids) != pca_result.shape[0]:
-#             print(f"Warning: Number of ensemble IDs ({len(ensemble_ids)}) doesn't match number of data points ({pca_result.shape[0]})")
-#             ensemble_ids = ensemble_ids[:pca_result.shape[0]]  # Truncate if necessary
-        
-#         # Visualize
-#         plt.figure(figsize=(12, 10))
-        
-#         for i, ensemble_id in enumerate(unique_ensembles):
-#             mask = ensemble_ids == ensemble_id
-#             if mask.sum() > 0:  # Only plot if there are points for this ensemble
-#                 plt.scatter(
-#                     pca_result[mask, 0], 
-#                     pca_result[mask, 1], 
-#                     c=[colors[i]], 
-#                     label=f'Ensemble {ensemble_id.item()}',
-#                     alpha=0.7
-#                 )
-        
-#         plt.title(f'PCA Visualization of {method} Embeddings')
-#         plt.xlabel('First Principal Component')
-#         plt.ylabel('Second Principal Component')
-#         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-#         plt.tight_layout()
-#         plt.savefig(f'{OUTPUT_PATH}/{method}_pca_visualization.png', dpi=300, bbox_inches='tight')
-#         plt.close()
+#     print("\nDummy Water Molecule Data (including padded conformers if applicable):")
+#     for i in range(dummy_data.shape[0]):
+#         print(f"\nConformer {i + 1}:")
+#         for j in range(num_atoms):
+#             scalar = dummy_data[i, j, :scalar_dim]
+#             vector = dummy_data[i, j, scalar_dim:].view(vector_dim, 3)
+#             print(f"  Atom {j + 1}:")
+#             print(f"    Scalar: {scalar.tolist()}")
+#             print(f"    Vector: {vector.tolist()}")
+    
+#     return dummy_data
 
-#         print(f"PCA visualization for {method} saved as '{method}_pca_visualization.png'")
+# def process_conformer_ensemble(conformer_embeddings: torch.Tensor, pad_to_batch_size: bool = False, batch_size = BATCH_SIZE) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+#     print(f"process_conformer_ensemble input shape: {conformer_embeddings.shape}")
+    
+#     num_conformers, num_atoms, total_dim = conformer_embeddings.shape
+#     scalar_dim = total_dim // 4
+#     vector_dim = scalar_dim
+    
+#     print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
+#     print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
+    
+#     if pad_to_batch_size and batch_size > num_conformers:
+#         pad_size = batch_size - num_conformers
+#         padding_indices = random.choices(range(num_conformers), k=pad_size)
+#         padding = conformer_embeddings[padding_indices]
+        
+#         print("\nPadded Conformers:")
+#         for i, idx in enumerate(padding_indices):
+#             print(f"\nPadded Conformer {num_conformers + i + 1} (copied from Conformer {idx + 1}):")
+#             for j in range(num_atoms):
+#                 scalar = padding[i, j, :scalar_dim]
+#                 vector = padding[i, j, scalar_dim:].view(vector_dim, 3)
+#                 print(f"  Atom {j + 1}:")
+#                 print(f"    Scalar: {scalar.tolist()}")
+#                 print(f"    Vector: {vector.tolist()}")
+        
+#         conformer_embeddings = torch.cat([conformer_embeddings, padding], dim=0)
+#         print(f"\nPadded input shape: {conformer_embeddings.shape}")
+#         print(f"Indices used for padding: {padding_indices}")
+#     else:
+#         print("\nNo padding needed. Number of conformers matches or exceeds batch size.")
+    
+#     combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device)
+#     results = combiner(conformer_embeddings)
+
+#     return results
+
+# def print_means(scalar, vector):
+#     scalar_mean = scalar.mean(dim=1)
+#     vector_mean = vector.mean(dim=1)
+    
+#     print("\nMean values:")
+#     for i in range(scalar_mean.shape[0]):
+#         print(f"Conformer {i + 1}:")
+#         print(f"  Scalar mean: {scalar_mean[i].tolist()}")
+#         print(f"  Vector mean: {vector_mean[i].tolist()}")
+
+# def run_sanity_checks(conformer_embeddings: torch.Tensor):
+#     print("Starting sanity checks...")
+    
+#     num_conformers, num_atoms, total_dim = conformer_embeddings.shape
+#     scalar_dim = total_dim // 4
+#     vector_dim = scalar_dim
+
+#     def print_detailed_embeddings(results, title):
+#         print(f"\n{title}")
+#         for method, (scalar, vector) in results.items():
+#             print(f"\n{method}:")
+#             for i in range(scalar.shape[0]):
+#                 print(f"  Conformer {i + 1}:")
+#                 print(f"    Scalar: {scalar[i].tolist()}")
+#                 print(f"    Vector: {vector[i].tolist()}")
+
+#     def print_means(scalar, vector):
+#         scalar_mean = scalar.mean(dim=1)
+#         vector_mean = vector.mean(dim=1)
+        
+#         print("\nMean values:")
+#         for i in range(scalar_mean.shape[0]):
+#             print(f"Conformer {i + 1}:")
+#             print(f"  Scalar mean: {scalar_mean[i].tolist()}")
+#             print(f"  Vector mean: {vector_mean[i].tolist()}")
+
+#     print("\nRunning sanity checks with original data:")
+#     results_original = process_conformer_ensemble(conformer_embeddings)
+#     print_detailed_embeddings(results_original, "Original Data Embeddings")
+
+#     # print("\nMean calculations for original data:")
+#     # scalar = conformer_embeddings[:, :, :scalar_dim]
+#     # vector = conformer_embeddings[:, :, scalar_dim:].view(num_conformers, num_atoms, vector_dim, 3)
+#     # print_means(scalar, vector)
+
+#     print("\nRunning sanity checks with padded data:")
+#     results_padded = process_conformer_ensemble(conformer_embeddings, pad_to_batch_size=False)
+#     print_detailed_embeddings(results_padded, "Padded Data Embeddings")
+
+#     # print("\nMean calculations for padded data:")
+#     # padded_embeddings = torch.zeros(BATCH_SIZE, num_atoms, total_dim)
+#     # padded_embeddings[:num_conformers] = conformer_embeddings
+#     # scalar_padded = padded_embeddings[:, :, :scalar_dim]
+#     # vector_padded = padded_embeddings[:, :, scalar_dim:].view(BATCH_SIZE, num_atoms, vector_dim, 3)
+#     # print_means(scalar_padded, vector_padded)
+
+#     print("\nComparing original and padded results:")
+#     for method in results_original.keys():
+#         scalar_orig, vector_orig = results_original[method]
+#         scalar_pad, vector_pad = results_padded[method]
+        
+#         print(f"\n{method}:")
+#         print(f"  Original scalar shape: {scalar_orig.shape}")
+#         print(f"  Padded scalar shape: {scalar_pad.shape}")
+#         print(f"  Original vector shape: {vector_orig.shape}")
+#         print(f"  Padded vector shape: {vector_pad.shape}")
+        
+#         print("  Scalar difference (first 5 elements):")
+#         print(f"    {(scalar_pad[:num_conformers] - scalar_orig)[:5]}")
+#         print("  Vector difference (first 5 elements):")
+#         print(f"    {(vector_pad[:num_conformers] - vector_orig)[:5]}")
+
+#     print("Sanity checks completed.")
+
+# def main():
+#     print("Starting main function...")
+    
+#     # Create dummy data for water molecules
+#     num_conformers = 4
+#     num_atoms = 3
+#     scalar_dim = 2
+#     vector_dim = 2
+#     dummy_data = create_dummy_water_data(num_conformers, num_atoms, scalar_dim, vector_dim)
+
+#     print(f"\nCreated dummy data for {num_conformers} water molecule conformers")
+#     print(f"Dummy data shape: {dummy_data.shape}")
+
+#     # Run sanity checks
+#     results = process_conformer_ensemble(dummy_data, pad_to_batch_size=False, batch_size=BATCH_SIZE)
+#     run_sanity_checks(dummy_data)
+
+#     print("\nSanity checks completed.")
+
+# if __name__ == "__main__":
+#     main()
+    

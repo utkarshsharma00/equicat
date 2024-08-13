@@ -1,5 +1,5 @@
 """
-EQUICAT Model Implementation (GPU-enabled version)
+EQUICAT Model Implementation
 
 This module implements the EQUICAT model, a neural network architecture designed for 
 equivariant learning on molecular systems. It leverages the MACE framework to create 
@@ -119,6 +119,7 @@ class EQUICAT(torch.nn.Module):
         atomic_numbers = input_dict['atomic_numbers']
         edge_index = input_dict['edge_index']
 
+        print("-" * 28)
         print(f"Processing a new conformer")
         print("-" * 28)
         print(f"Positions shape: {positions.shape}")

@@ -1,32 +1,34 @@
 """
-EQUICAT Model Training Script (GPU-enabled version with Optional Conformer Padding)
+EQUICAT Model Training Script
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
-training loop, logging functionality, early stopping, and robust error handling.
-It now supports GPU acceleration using CUDA and optional handling of variable-sized conformer ensembles.
+training loop, logging functionality, early stopping, robust error handling, and now features
+model checkpointing for easy resumption of training.
 
 Key features:
 1. GPU acceleration with CUDA support
 2. Optional Conformer Padding: Handles variable-sized conformer ensembles when enabled
 3. Customizable logging setup with detailed gradient and loss tracking
 4. Dynamic calculation of average neighbors and unique atomic numbers
-5. Contrastive loss for semi-supervised learning
+5. Integrated contrastive loss calculation for semi-supervised learning
 6. Gradient clipping and comprehensive logging during training
 7. Configurable model parameters and training hyperparameters
 8. Total runtime measurement
 9. Early stopping to prevent overfitting
 10. Robust error handling and NaN detection
 11. GPU memory tracking
+12. Model checkpointing for training resumption
+13. Normalized embedding comparison in loss calculations
 
-New Feature:
-- Optional Conformer Padding: The training process now accommodates optional padding of
-  conformer batches, ensuring consistent batch sizes across all molecules and epochs when enabled.
-  This feature can be controlled via a command-line argument.
+New Features:
+- Model Checkpointing: Allows saving and loading of model states for easy training resumption
+- Integrated Contrastive Loss: Loss calculation is now performed within train.py
+- Embedding Normalization: Ensures consistent comparison of embeddings in loss calculations
 
 Author: Utkarsh Sharma
-Version: 2.2.0
-Date: 08-08-2024 (MM-DD-YYYY)
+Version: 2.3.0
+Date: 08-13-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -34,13 +36,16 @@ Dependencies:
     - e3nn (>=0.4.0)
     - mace (custom package)
     - molli (custom package) 
+    - matplotlib (>=3.3.0)
+    - sklearn (>=0.24.0)
 
 Usage:
-    python train.py [--pad_batches]
+    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--resume_from_checkpoint CHECKPOINT_PATH]
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.3.0: Added model checkpointing and integrated contrastive loss calculation
     - v2.2.0: Added optional conformer padding via command-line argument
     - v2.1.0: Added support for training with padded conformer batches
     - v2.0.0: Added GPU support with CUDA
@@ -53,11 +58,12 @@ Change Log:
 TODO:
     - Implement learning rate scheduling
     - Add support for distributed training
-    - Implement checkpointing for resuming training
     - Implement weighted loss calculation to account for conformer duplications
+    - Add visualization of training progress (loss curves, etc.)
 """
 
 import torch
+import torch.nn.functional as F
 import molli as ml  
 import logging
 import sys
@@ -66,6 +72,7 @@ import time
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import argparse
+import os
 from e3nn import o3
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
@@ -73,19 +80,19 @@ from torch.autograd import detect_anomaly
 from mace import data, modules, tools
 from mace.tools import to_numpy
 from collections import OrderedDict
+from sklearn.decomposition import PCA
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import ConformerDataset, process_data
-from contrastive_loss import contrastive_loss
 from conformer_ensemble_embedding_combiner import process_conformer_ensemble
 
 # Global constants
-# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
-# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-NUM_ENSEMBLES = 2
+# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
+# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
+NUM_ENSEMBLES = 4
 CUTOFF = 5.0
-NUM_EPOCHS = 1
+NUM_EPOCHS = 10
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EARLY_STOPPING_PATIENCE = 10
@@ -93,6 +100,7 @@ EARLY_STOPPING_DELTA = 1e-4
 GRADIENT_CLIP_VALUE = 1.0
 EPSILON = 1e-8
 VISUALIZATION_INTERVAL = 1
+CHECKPOINT_INTERVAL = 5  # Save checkpoint every 5 epochs
 
 def get_device():
     """
@@ -145,7 +153,7 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     total_atoms = 0
     unique_atomic_numbers = OrderedDict()
     
-    for batch_conformers, _, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE, device=device): #! added num_added over here
+    for batch_conformers, _, _, _, _ in process_data(dataset, batch_size=BATCH_SIZE, device=device):
         for conformer in batch_conformers:
             conformer = conformer.to(device)
             total_neighbors += conformer.edge_index.shape[1]
@@ -156,53 +164,95 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
     return avg_neighbors, list(unique_atomic_numbers.keys())
 
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches):
+def plot_embeddings_pca(embeddings, epoch, OUTPUT_PATH):
     """
-    Train the EQUICAT model using contrastive loss with early stopping and optional batch padding.
+    Perform PCA on the embeddings and create a visualization.
+
+    Args:
+        embeddings (dict): Dictionary containing embeddings for each ensemble and method.
+        epoch (int): Current training epoch.
+        OUTPUT_PATH (str): Directory to save the plot.
+
+    Returns:
+        None
+    """
+    # Combine all embeddings
+    all_embeddings = []
+    ensemble_labels = []
+    for ensemble_id, methods in embeddings.items():
+        for method, (scalar, vector) in methods.items():
+            combined = torch.cat([scalar.view(-1), vector.view(-1)])
+            all_embeddings.append(combined.detach().cpu().numpy())
+            ensemble_labels.append(ensemble_id)
+
+    all_embeddings = np.array(all_embeddings)
+
+    # Perform PCA
+    pca = PCA(n_components=2)
+    embeddings_2d = pca.fit_transform(all_embeddings)
+
+    # Plot
+    plt.figure(figsize=(10, 8))
+    for ensemble_id in set(ensemble_labels):
+        mask = np.array(ensemble_labels) == ensemble_id
+        plt.scatter(embeddings_2d[mask, 0], embeddings_2d[mask, 1], label=f'Ensemble {ensemble_id}')
+
+    plt.title(f'PCA of Embeddings - Epoch {epoch}')
+    plt.xlabel('First Principal Component')
+    plt.ylabel('Second Principal Component')
+    plt.legend()
+    
+    # Save the plot
+    plt.savefig(f'{OUTPUT_PATH}/pca_visualizations/embeddings_pca_epoch_{epoch}.png')
+    plt.close()
+
+def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches, embedding_type, resume_from=None):
+    """
+    Train the EQUICAT model using contrastive loss with early stopping and checkpointing.
 
     Args:
         model_config (dict): Configuration for the EQUICAT model.
         z_table (AtomicNumberTable): Table of atomic numbers.
         conformer_ensemble (ConformerLibrary): Library of conformers for training.
         cutoff (float): Cutoff distance for atomic interactions.
-        device (torch.device): The device to perform training on.
-        pad_batches (bool): Whether to pad batches to a consistent size.
+        device (torch.device): Device to run the training on.
+        pad_batches (bool): Whether to pad batches to handle variable-sized conformer ensembles.
+        embedding_type (str): Type of embedding to use for loss computation.
+        resume_from (str, optional): Path to a checkpoint file to resume training from.
 
     Returns:
         EQUICATPlusNonLinearReadout: The trained EQUICAT model.
-
-    Note:
-        When pad_batches is True, the function will pad smaller batches to the specified
-        batch size. The loss calculation will only consider the original, non-padded
-        conformers to maintain training integrity.
     """
-    print(f"train_equicat called with pad_batches={pad_batches}")
-    # Initialize model and move to device
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
     logging.info(f"Model initialized and moved to {device}")
 
-    # Initialize optimizer
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     logging.info(f"Optimizer initialized with learning rate: {LEARNING_RATE}")
 
-    # Initialize dataset
+    start_epoch = 0
+    if resume_from:
+        checkpoint = torch.load(resume_from)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        logging.info(f"Resuming training from epoch {start_epoch}")
+
     dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES)
     logging.info(f"Dataset initialized with {NUM_ENSEMBLES} ensembles")
 
-    # Early stopping variables
     best_loss = float('inf')
     epochs_no_improve = 0
     best_model = None
 
-    # Training loop
-    for epoch in range(NUM_EPOCHS):
+    ensemble_embeddings = {}
+
+    for epoch in range(start_epoch, NUM_EPOCHS):
         total_loss = 0.0
         batch_count = 0
 
         with detect_anomaly():
             for batch_conformers, _, _, ensemble_id, num_added in process_data(dataset, batch_size=BATCH_SIZE, device=device, pad_batches=pad_batches):
-                print(f"Batch received: {len(batch_conformers)} conformers, num_added: {num_added}")  # Debug print
                 optimizer.zero_grad()
 
                 embeddings = []
@@ -216,18 +266,36 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
                     output = model(input_dict)
                     embeddings.append(output)
 
-                embeddings = torch.stack(embeddings).to(device)
+                embeddings = torch.stack(embeddings)
+                
+                # Process the embeddings using the ensemble combiner
+                processed_embeddings = process_conformer_ensemble(embeddings)
+                
+                # Print detailed batch-level embeddings
+                print(f"\nBatch-level detailed embeddings for Ensemble {ensemble_id}:")
+                print_detailed_embeddings(processed_embeddings, level="Batch")
+
+                # Accumulate embeddings for ensemble-level averaging
+                if ensemble_id not in ensemble_embeddings:
+                    ensemble_embeddings[ensemble_id] = {method: [] for method in processed_embeddings.keys()}
+                for method, (scalar, vector) in processed_embeddings.items():
+                    ensemble_embeddings[ensemble_id][method].append((scalar, vector))
+
+                # Compute positive loss (inter-ensemble)
+                positive_loss = compute_positive_loss(processed_embeddings, embedding_type, normalize=False)
+
                 ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=device)
 
                 if num_added > 0:
                     original_batch_size = len(batch_conformers) - num_added
-                    loss = contrastive_loss(embeddings[:original_batch_size], ensemble_ids[:original_batch_size])
-                else:
-                    loss = contrastive_loss(embeddings, ensemble_ids)
+                    positive_loss = positive_loss[:original_batch_size]
+
+                loss = positive_loss.mean()
 
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
-                logging.info(f"Embeddings shape: {embeddings.shape}, Loss: {loss.item():.6f}")
+                logging.info(f"Embeddings shape: {embeddings.shape}, Positive Loss: {loss.item():.6f}")
                 logging.info(f"Ensemble IDs: {ensemble_ids}")
+
                 if pad_batches:
                     logging.info(f"Number of randomly added conformers: {num_added}")
 
@@ -237,10 +305,8 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
 
                 loss.backward()
 
-                # Gradient clipping
                 clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
 
-                # Gradient check
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         grad_norm = param.grad.norm().item()
@@ -257,17 +323,50 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
 
                 logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}")
 
-                # Log GPU memory usage
                 if device.type == 'cuda':
                     logging.info(f"GPU memory allocated: {torch.cuda.memory_allocated(device) / 1e6:.2f} MB")
                     logging.info(f"GPU memory cached: {torch.cuda.memory_reserved(device) / 1e6:.2f} MB")
 
-        avg_loss = total_loss / (batch_count + EPSILON) # Add epsilon to prevent division by zero
-        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Average Loss: {avg_loss:.6f}")
+        # Compute negative loss using average ensemble embeddings
+        if len(ensemble_embeddings) > 1:
+            avg_embeddings = compute_average_ensemble_embeddings(ensemble_embeddings)
+            plot_embeddings_pca(avg_embeddings, epoch+1, OUTPUT_PATH)
 
-        # Early stopping check
-        if avg_loss < best_loss - EARLY_STOPPING_DELTA:
-            best_loss = avg_loss
+            # Print ensemble averaged embeddings for all types
+            print("\nEnsemble Average Embeddings:")
+            for ensemble_id, methods in avg_embeddings.items():
+                print(f"Ensemble {ensemble_id}:")
+                for method, (scalar, vector) in methods.items():
+                    print(f"  {method}:")
+                    print(f"    Scalar shape: {scalar.shape}")
+                    print(f"    Vector shape: {vector.shape}")
+                    print(f"    Scalar: {scalar.squeeze().tolist()}")
+                    print(f"    Vector: {vector.squeeze().tolist()}")
+
+            negative_loss = compute_negative_loss(avg_embeddings, embedding_type, normalize=False)
+            
+            logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Negative Loss: {negative_loss.item():.6f}")
+
+            # Combine positive and negative loss
+            total_loss = total_loss / batch_count + negative_loss
+        else:
+            total_loss = total_loss / batch_count
+
+        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Total Loss: {total_loss:.6f}")
+
+        # Save checkpoint
+        if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
+            checkpoint_path = f'{OUTPUT_PATH}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': total_loss,
+            }, checkpoint_path)
+            logging.info(f"Checkpoint saved to {checkpoint_path}")
+
+        if total_loss < best_loss - EARLY_STOPPING_DELTA:
+            best_loss = total_loss
             epochs_no_improve = 0
             best_model = model.state_dict()
         else:
@@ -281,19 +380,155 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
     logging.info("Training completed")
     return model
 
+def print_detailed_embeddings(embeddings, level="Batch"):
+    """
+    Print detailed information about the embeddings.
+
+    Args:
+        embeddings (dict): A dictionary containing embeddings for different methods.
+        level (str): The level of embeddings being printed (e.g., "Batch" or "Ensemble").
+
+    Returns:
+        None
+    """
+    print(f"\n{level} Detailed Embeddings:")
+    for method, (scalar, vector) in embeddings.items():
+        print(f"  {method}:")
+        print(f"    Scalar embeddings shape: {scalar.shape}")
+        print(f"    Vector embeddings shape: {vector.shape}")
+        
+        print(f"    Scalar embeddings (all conformers, all features):")
+        for i in range(scalar.shape[0]):
+            print(f"      Conformer {i}:")
+            print(scalar[i])
+        
+        print(f"    Vector embeddings (all conformers, all features):")
+        for i in range(vector.shape[0]):
+            print(f"      Conformer {i}:")
+            print(vector[i])
+        
+        print("-" * 65)  # Separator between methods
+
+def compute_positive_loss(embeddings, embedding_type, normalize=False):
+    """
+    Compute the positive loss for the contrastive learning.
+
+    Args:
+        embeddings (dict): A dictionary containing embeddings for different methods.
+        embedding_type (str): The type of embedding to use for loss computation.
+        normalize (bool): Whether to apply L2 normalization to the embeddings.
+
+    Returns:
+        torch.Tensor: The computed positive loss.
+    """
+    if embedding_type == 'all':
+        loss = 0
+        for method, (scalar, vector) in embeddings.items():
+            combined = torch.cat([scalar, vector.view(vector.shape[0], -1)], dim=1)
+            if normalize:
+                combined = F.normalize(combined, p=2, dim=-1)
+            pairwise_distances = torch.cdist(combined, combined)
+            print(f"Positive pairwise distances for {method}: \n{pairwise_distances}")
+            print(f"Positive combined shape for {method}: {combined.shape}")
+            print(f"Positive combined stats for {method}: mean={combined.mean():.4f}, std={combined.std():.4f}")
+            loss += pairwise_distances.mean(dim=1)
+        return loss / len(embeddings)
+    else:
+        scalar, vector = embeddings[embedding_type]
+        combined = torch.cat([scalar, vector.view(vector.shape[0], -1)], dim=1)
+        if normalize:
+            combined = F.normalize(combined, p=2, dim=-1)
+        pairwise_distances = torch.cdist(combined, combined)
+        print(f"Positive pairwise distances for {embedding_type}: \n{pairwise_distances}")
+        print(f"Positive combined shape for {embedding_type}: {combined.shape}")
+        print(f"Positive combined stats for {embedding_type}: mean={combined.mean():.4f}, std={combined.std():.4f}")
+        return pairwise_distances.mean(dim=1)
+
+def compute_average_ensemble_embeddings(ensemble_embeddings):
+    """
+    Compute average embeddings for each ensemble.
+
+    Args:
+        ensemble_embeddings (dict): A dictionary containing embeddings for each ensemble.
+
+    Returns:
+        dict: A dictionary containing average embeddings for each ensemble.
+    """
+    avg_embeddings = {}
+    for ensemble_id, ensemble_methods in ensemble_embeddings.items():
+        avg_embeddings[ensemble_id] = {}
+        for method, batches in ensemble_methods.items():
+            all_scalars = torch.cat([scalar for scalar, _ in batches], dim=0)
+            all_vectors = torch.cat([vector for _, vector in batches], dim=0)
+            avg_scalar = all_scalars.mean(dim=0, keepdim=True)
+            avg_vector = all_vectors.mean(dim=0, keepdim=True)
+            avg_embeddings[ensemble_id][method] = (avg_scalar, avg_vector)
+    return avg_embeddings
+
+def compute_negative_loss(avg_embeddings, embedding_type, normalize=False):
+    """
+    Compute the negative loss for the contrastive learning.
+
+    Args:
+        avg_embeddings (dict): A dictionary containing average embeddings for each ensemble.
+        embedding_type (str): The type of embedding to use for loss computation.
+        normalize (bool): Whether to apply L2 normalization to the embeddings.
+
+    Returns:
+        torch.Tensor: The computed negative loss.
+    """
+    if embedding_type == 'all':
+        loss = 0
+        for method in avg_embeddings[list(avg_embeddings.keys())[0]].keys():
+            combined = torch.stack([
+                torch.cat([
+                    embeddings[method][0].view(-1),
+                    embeddings[method][1].view(-1)
+                ])
+                for embeddings in avg_embeddings.values()
+            ])
+            if normalize:
+                combined = F.normalize(combined, p=2, dim=-1)
+            pairwise_distances = torch.cdist(combined, combined)
+            print(f"Pairwise distances for {method}: \n{pairwise_distances}")
+            print(f"Combined shape for {method}: {combined.shape}")
+            print(f"Combined stats for {method}: mean={combined.mean():.4f}, std={combined.std():.4f}")
+            loss += torch.relu(1.0 - pairwise_distances).sum()
+        return loss / len(avg_embeddings[list(avg_embeddings.keys())[0]])
+    else:
+        combined = torch.stack([
+            torch.cat([
+                embeddings[embedding_type][0].view(-1),
+                embeddings[embedding_type][1].view(-1)
+            ])
+            for embeddings in avg_embeddings.values()
+        ])
+        if normalize:
+            combined = F.normalize(combined, p=2, dim=-1)
+        pairwise_distances = torch.cdist(combined, combined)
+        print(f"Pairwise distances for {embedding_type}: \n{pairwise_distances}")
+        print(f"Combined shape for {embedding_type}: {combined.shape}")
+        print(f"Combined stats for {embedding_type}: mean={combined.mean():.4f}, std={combined.std():.4f}")
+        return torch.relu(1.0 - pairwise_distances).sum()
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EQUICAT Model Training")
     parser.add_argument('--pad_batches', action='store_true', help='Enable batch padding')
+    parser.add_argument('--embedding_type', type=str, default='improved_self_attention',
+                        choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
+                        help='Type of embedding to use for loss computation')
+    parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
     args = parser.parse_args()
-    print(f"Parsed args.pad_batches: {args.pad_batches}")
+
     start_time = time.time()
 
     setup_logging(f"{OUTPUT_PATH}/training.log")
     logging.info("Starting EQUICAT training")
 
-    device = get_device()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
     logging.info(f"Padding batches: {args.pad_batches}")
+    logging.info(f"Embedding type: {args.embedding_type}")
 
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
@@ -328,7 +563,7 @@ if __name__ == "__main__":
     }
     logging.info(f"Model configuration: {model_config}")
 
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches)
+    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches, args.embedding_type, args.resume_from_checkpoint)
 
     torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
     logging.info("Model training completed and saved.")

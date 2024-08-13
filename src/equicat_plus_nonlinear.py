@@ -1,5 +1,5 @@
 """
-EQUICAT Plus Non-Linear Readout Module (GPU-enabled version)
+EQUICAT Plus Non-Linear Readout Module
 
 This module extends the EQUICAT model with a custom
 non-linear readout layer. It provides two main classes:
