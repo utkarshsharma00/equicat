@@ -3,8 +3,8 @@ EQUICAT Model Training Script
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
-training loop, logging functionality, early stopping, robust error handling, and now features
-model checkpointing for easy resumption of training.
+training loop, logging functionality, early stopping, robust error handling, model checkpointing,
+and advanced learning rate scheduling.
 
 Key features:
 1. GPU acceleration with CUDA support
@@ -20,15 +20,16 @@ Key features:
 11. GPU memory tracking
 12. Model checkpointing for training resumption
 13. Normalized embedding comparison in loss calculations
+14. Advanced learning rate scheduling options
 
 New Features:
-- Model Checkpointing: Allows saving and loading of model states for easy training resumption
-- Integrated Contrastive Loss: Loss calculation is now performed within train.py
-- Embedding Normalization: Ensures consistent comparison of embeddings in loss calculations
+- Learning Rate Scheduling: Implements various learning rate schedulers for improved training dynamics
+- Enhanced Logging: Includes learning rate tracking in epoch summaries
+- Flexible Scheduler Selection: Allows choice between different scheduler types via command-line arguments
 
 Author: Utkarsh Sharma
-Version: 2.3.0
-Date: 08-13-2024 (MM-DD-YYYY)
+Version: 2.4.0
+Date: 08-15-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -40,11 +41,12 @@ Dependencies:
     - sklearn (>=0.24.0)
 
 Usage:
-    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--resume_from_checkpoint CHECKPOINT_PATH]
+    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--scheduler {plateau,step,cosine,onecycle}] [--resume_from_checkpoint CHECKPOINT_PATH]
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.4.0: Added advanced learning rate scheduling options
     - v2.3.0: Added model checkpointing and integrated contrastive loss calculation
     - v2.2.0: Added optional conformer padding via command-line argument
     - v2.1.0: Added support for training with padded conformer batches
@@ -56,10 +58,8 @@ Change Log:
     - v1.0.0: Initial implementation of EQUICAT training pipeline
 
 TODO:
-    - Implement learning rate scheduling
-    - Add support for distributed training
     - Implement weighted loss calculation to account for conformer duplications
-    - Add visualization of training progress (loss curves, etc.)
+    - Add support for distributed training
 """
 
 import torch
@@ -84,27 +84,33 @@ from sklearn.decomposition import PCA
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import ConformerDataset, process_data
 from conformer_ensemble_embedding_combiner import process_conformer_ensemble
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
 np.random.seed(0)
 
 # Global constants
-CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
+CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" # Path to the conformer library file containing molecular structures.
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output" # Directory where training outputs, such as logs, models, and visualizations, will be saved.
 # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
 # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 2
-CUTOFF = 5.0
-NUM_EPOCHS = 5
-BATCH_SIZE = 16
-LEARNING_RATE = 1e-3
-EARLY_STOPPING_PATIENCE = 10
-EARLY_STOPPING_DELTA = 1e-4
-GRADIENT_CLIP_VALUE = 1.0
-EPSILON = 1e-8
-VISUALIZATION_INTERVAL = 1
-CHECKPOINT_INTERVAL = 5  # Save checkpoint every 5 epochs
+NUM_ENSEMBLES = 5  # Number of ensemble models to be trained and averaged.
+CUTOFF = 5.0  # Cutoff distance for interaction calculations or neighborhood definition.
+NUM_EPOCHS = 5  # Total number of training epochs.
+BATCH_SIZE = 6  # Number of samples per batch during training.
+LEARNING_RATE = 1e-3  # Initial learning rate for the optimizer.
+EARLY_STOPPING_PATIENCE = 10  # Number of epochs with no improvement after which training stops early.
+EARLY_STOPPING_DELTA = 1e-4  # Minimum change in monitored metric to qualify as an improvement.
+GRADIENT_CLIP_VALUE = 1.0  # Maximum allowed value for gradients to prevent exploding gradients.
+EPSILON = 1e-8  # Small constant to avoid division by zero in numerical computations.
+VISUALIZATION_INTERVAL = 1  # Number of epochs between visualizations or logging of results.
+CHECKPOINT_INTERVAL = 5  # Number of epochs between saving model checkpoints.
+SCHEDULER_STEP_SIZE = 10  # Number of epochs after which the learning rate is reduced in StepLR.
+SCHEDULER_GAMMA = 0.1  # Multiplicative factor by which the learning rate is reduced in schedulers.
+SCHEDULER_PATIENCE = 5  # Number of epochs with no improvement before reducing the learning rate in ReduceLROnPlateau.
+SCHEDULER_T_MAX = NUM_EPOCHS  # Maximum number of epochs before restarting the learning rate schedule in CosineAnnealingLR.
+SCHEDULER_PCT_START = 0.3  # Percentage of the total training duration during which the learning rate increases in OneCycleLR.
 
 def get_device():
     """
@@ -210,9 +216,33 @@ def plot_embeddings_pca(embeddings, epoch, OUTPUT_PATH):
     plt.savefig(f'{OUTPUT_PATH}/pca_visualizations/embeddings_pca_epoch_{epoch}.png')
     plt.close()
 
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches, embedding_type, resume_from=None):
+def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
     """
-    Train the EQUICAT model using contrastive loss with early stopping and checkpointing.
+    Get the specified learning rate scheduler.
+
+    Args:
+        scheduler_type (str): Type of scheduler to use.
+        optimizer (torch.optim.Optimizer): The optimizer to schedule.
+        num_epochs (int): Total number of epochs for training.
+        steps_per_epoch (int): Number of steps (batches) per epoch.
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: The learning rate scheduler.
+    """
+    if scheduler_type == 'plateau':
+        return ReduceLROnPlateau(optimizer, mode='min', factor=SCHEDULER_GAMMA, patience=SCHEDULER_PATIENCE, verbose=True)
+    elif scheduler_type == 'step':
+        return StepLR(optimizer, step_size=SCHEDULER_STEP_SIZE, gamma=SCHEDULER_GAMMA)
+    elif scheduler_type == 'cosine':
+        return CosineAnnealingLR(optimizer, T_max=SCHEDULER_T_MAX)
+    elif scheduler_type == 'onecycle':
+        return OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=num_epochs, steps_per_epoch=steps_per_epoch, pct_start=SCHEDULER_PCT_START)
+    else:
+        raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+
+def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches, embedding_type, scheduler_type, resume_from=None):
+    """
+    Train the EQUICAT model using contrastive loss with early stopping, checkpointing, and learning rate scheduling.
 
     Args:
         model_config (dict): Configuration for the EQUICAT model.
@@ -222,27 +252,50 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
         device (torch.device): Device to run the training on.
         pad_batches (bool): Whether to pad batches to handle variable-sized conformer ensembles.
         embedding_type (str): Type of embedding to use for loss computation.
-        resume_from (str, optional): Path to a checkpoint file to resume training from.
+        scheduler_type (str): Type of learning rate scheduler to use.
+        resume_from (str, optional): Path to checkpoint file to resume training from.
 
     Returns:
         EQUICATPlusNonLinearReadout: The trained EQUICAT model.
     """
+    # Initialize the model and move it to the specified device
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
     logging.info(f"Model initialized and moved to {device}")
 
+    # Initialize the optimizer
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     logging.info(f"Optimizer initialized with learning rate: {LEARNING_RATE}")
 
+    # Initialize the dataset
+    dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES)
+    steps_per_epoch = len(dataset) // BATCH_SIZE + (1 if len(dataset) % BATCH_SIZE != 0 else 0)
+    
+    # Initialize the learning rate scheduler
+    if scheduler_type == 'plateau':
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=SCHEDULER_GAMMA, patience=SCHEDULER_PATIENCE, verbose=True)
+    elif scheduler_type == 'step':
+        scheduler = StepLR(optimizer, step_size=SCHEDULER_STEP_SIZE, gamma=SCHEDULER_GAMMA)
+    elif scheduler_type == 'cosine':
+        scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
+    elif scheduler_type == 'onecycle':
+        scheduler = OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=NUM_EPOCHS, steps_per_epoch=steps_per_epoch, pct_start=SCHEDULER_PCT_START)
+    else:
+        raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+    
+    logging.info(f"Learning rate scheduler initialized: {scheduler.__class__.__name__}")
+
+    # Resume training from checkpoint if specified
     start_epoch = 0
     if resume_from:
         checkpoint = torch.load(resume_from)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         logging.info(f"Resuming training from epoch {start_epoch}")
 
-    dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES)
     logging.info(f"Dataset initialized with {NUM_ENSEMBLES} ensembles")
 
     best_loss = float('inf')
@@ -321,11 +374,15 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
                         logging.info(f"Gradient norm for {name}: {grad_norm:.6f}")
 
                 optimizer.step()
-
+                
+                # Step the scheduler if it's not ReduceLROnPlateau
+                if scheduler_type != 'plateau':
+                    scheduler.step()
+                
                 total_loss += loss.item()
                 batch_count += 1
 
-                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}")
+                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
 
                 if device.type == 'cuda':
                     logging.info(f"GPU memory allocated: {torch.cuda.memory_allocated(device) / 1e6:.2f} MB")
@@ -356,7 +413,11 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
         else:
             total_loss = total_loss / batch_count
 
-        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Total Loss: {total_loss:.6f}")
+        logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Total Loss: {total_loss:.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+
+        # Step the ReduceLROnPlateau scheduler if used
+        if scheduler_type == 'plateau':
+            scheduler.step(total_loss)
 
         # Save checkpoint
         if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
@@ -365,6 +426,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'loss': total_loss,
             }, checkpoint_path)
             logging.info(f"Checkpoint saved to {checkpoint_path}")
@@ -522,6 +584,9 @@ if __name__ == "__main__":
                         choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
                         help='Type of embedding to use for loss computation')
     parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
+    parser.add_argument('--scheduler', type=str, default='step',
+                        choices=['plateau', 'step', 'cosine', 'onecycle'],
+                        help='Type of learning rate scheduler to use')
     args = parser.parse_args()
 
     start_time = time.time()
@@ -533,6 +598,7 @@ if __name__ == "__main__":
     logging.info(f"Using device: {device}")
     logging.info(f"Padding batches: {args.pad_batches}")
     logging.info(f"Embedding type: {args.embedding_type}")
+    logging.info(f"Learning rate scheduler: {args.scheduler}")
 
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
@@ -553,7 +619,7 @@ if __name__ == "__main__":
         "r_max": CUTOFF,
         "num_bessel": 8,
         "num_polynomial_cutoff": 6,
-        "max_ell": 1,
+        "max_ell": 2,
         "num_interactions": 2,
         "num_elements": len(z_table),
         "interaction_cls": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
@@ -567,7 +633,7 @@ if __name__ == "__main__":
     }
     logging.info(f"Model configuration: {model_config}")
 
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches, args.embedding_type, args.resume_from_checkpoint)
+    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches, args.embedding_type, args.scheduler, args.resume_from_checkpoint)
 
     torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
     logging.info("Model training completed and saved.")
