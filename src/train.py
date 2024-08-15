@@ -85,14 +85,18 @@ from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import ConformerDataset, process_data
 from conformer_ensemble_embedding_combiner import process_conformer_ensemble
 
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(0)
+
 # Global constants
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
 # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
 # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 4
+NUM_ENSEMBLES = 2
 CUTOFF = 5.0
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EARLY_STOPPING_PATIENCE = 10
@@ -556,7 +560,7 @@ if __name__ == "__main__":
         "interaction_cls_first": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
         "hidden_irreps": o3.Irreps("32x0e + 32x1o"),
         "MLP_irreps": o3.Irreps("16x0e"),
-        "atomic_energies": to_numpy(torch.zeros(len(z_table))),
+        "atomic_energies": to_numpy(torch.zeros(len(z_table), dtype=torch.float64)),
         "correlation": 3,
         "gate": torch.nn.functional.silu,
         "avg_num_neighbors": avg_num_neighbors,

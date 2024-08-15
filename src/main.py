@@ -69,6 +69,10 @@ NUM_ENSEMBLES = 2
 BATCH_SIZE = 16
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
 
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(0)
+
 # Model configuration
 model_config = {
     "atomic_numbers": None,

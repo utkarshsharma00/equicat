@@ -43,9 +43,14 @@ Change Log:
 
 import torch
 import torch.nn as nn
+import numpy as np
 from e3nn import o3
 from e3nn import nn as e3nn_nn
 from equicat import EQUICAT, move_to_device
+
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(0)
 
 class CustomNonLinearReadout(nn.Module):
     """
@@ -211,3 +216,5 @@ def move_to_device(obj, device):
         return {key: move_to_device(value, device) for key, value in obj.items()}
     else:
         return obj
+
+

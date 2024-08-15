@@ -48,10 +48,15 @@ TODO:
 
 import torch
 import torch.nn.functional
+import numpy as np
 from mace import modules, tools
 from mace.tools import torch_geometric
 from mace.tools.scatter import scatter_sum
 from torch_geometric.utils import to_dense_batch
+
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(0)
 
 class EQUICAT(torch.nn.Module):
     def __init__(self, model_config, z_table):
@@ -116,7 +121,9 @@ class EQUICAT(torch.nn.Module):
 
         # Extract relevant information from the input dictionary
         positions = input_dict['positions']
+        # print(f"EQUICAT input positions dtype: {positions.dtype}")
         atomic_numbers = input_dict['atomic_numbers']
+        # print(f"EQUICAT atomic number dtype: {atomic_numbers.dtype}")
         edge_index = input_dict['edge_index']
 
         print("-" * 28)

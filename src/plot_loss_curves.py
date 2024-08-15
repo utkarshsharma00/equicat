@@ -48,6 +48,9 @@ import shutil
 from collections import defaultdict
 from plotly.subplots import make_subplots
 
+np.set_printoptions(precision=15)
+np.random.seed(0)
+
 # Constants
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output/loss_curves"
 LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/output/"

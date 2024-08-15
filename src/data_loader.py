@@ -61,9 +61,14 @@ import random
 import molli as ml
 import torch.utils.data
 import argparse
+import numpy as np
 from typing import List, Tuple
 from mace import data, tools
 from torch_geometric.data import Data, Batch
+
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(0)
 
 class ConformerDataset:
     """
@@ -107,7 +112,8 @@ class ConformerDataset:
         key = self.keys[idx]
         with self.conformer_ensemble.reading():
             conformer = self.conformer_ensemble[key]
-            coords = torch.tensor(conformer.coords, dtype=torch.float32)
+            coords = torch.tensor(conformer.coords, dtype=torch.float64) #! Changed to float64
+            # print(f"Conformer coords dtype: {coords.dtype}")
             atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
             print(f"Retrieved conformer ensemble {key} with {coords.shape[0]} conformers")
             print(f"Atomic Numbers: {atomic_numbers}")
@@ -128,7 +134,7 @@ class ConformerDataset:
                 
                 # Create PyTorch Geometric Data object with the correct edge_index
                 torch_geo_data = Data(
-                    x=torch.tensor(atomic_data.node_attrs, dtype=torch.float32),
+                    x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64), #! Changed to float64
                     positions=atomic_data.positions,
                     edge_index=atomic_data.edge_index,
                     atomic_numbers=atomic_numbers,
