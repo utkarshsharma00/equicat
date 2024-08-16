@@ -3,8 +3,8 @@ EQUICAT Model Training Script
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It includes data loading, model initialization, 
-training loop, logging functionality, early stopping, robust error handling, model checkpointing,
-and advanced learning rate scheduling.
+training loop, logging functionality, early stopping, robust error handling, and features
+model checkpointing for easy resumption of training.
 
 Key features:
 1. GPU acceleration with CUDA support
@@ -20,15 +20,16 @@ Key features:
 11. GPU memory tracking
 12. Model checkpointing for training resumption
 13. Normalized embedding comparison in loss calculations
-14. Advanced learning rate scheduling options
+14. Graceful handling of single-conformer batches
 
 New Features:
-- Learning Rate Scheduling: Implements various learning rate schedulers for improved training dynamics
-- Enhanced Logging: Includes learning rate tracking in epoch summaries
-- Flexible Scheduler Selection: Allows choice between different scheduler types via command-line arguments
+- Graceful Single-Conformer Handling: The training process now gracefully handles batches
+  with single conformers by skipping the backward pass and keeping the positive loss at zero.
+  This ensures that the model continues to learn from multi-conformer batches and negative
+  examples without introducing errors or halting training due to single-conformer cases.
 
 Author: Utkarsh Sharma
-Version: 2.4.0
+Version: 2.5.0
 Date: 08-15-2024 (MM-DD-YYYY)
 License: MIT
 
@@ -41,11 +42,12 @@ Dependencies:
     - sklearn (>=0.24.0)
 
 Usage:
-    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--scheduler {plateau,step,cosine,onecycle}] [--resume_from_checkpoint CHECKPOINT_PATH]
+    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--resume_from_checkpoint CHECKPOINT_PATH]
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v2.5.0: Added graceful handling of single-conformer batches
     - v2.4.0: Added advanced learning rate scheduling options
     - v2.3.0: Added model checkpointing and integrated contrastive loss calculation
     - v2.2.0: Added optional conformer padding via command-line argument
@@ -58,8 +60,8 @@ Change Log:
     - v1.0.0: Initial implementation of EQUICAT training pipeline
 
 TODO:
-    - Implement weighted loss calculation to account for conformer duplications
     - Add support for distributed training
+    - Implement weighted loss calculation to account for conformer duplications
 """
 
 import torch
@@ -95,9 +97,9 @@ CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligne
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output" # Directory where training outputs, such as logs, models, and visualizations, will be saved.
 # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
 # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 5  # Number of ensemble models to be trained and averaged.
+NUM_ENSEMBLES = 2  # Number of ensemble models to be trained and averaged.
 CUTOFF = 5.0  # Cutoff distance for interaction calculations or neighborhood definition.
-NUM_EPOCHS = 5  # Total number of training epochs.
+NUM_EPOCHS = 2  # Total number of training epochs.
 BATCH_SIZE = 6  # Number of samples per batch during training.
 LEARNING_RATE = 1e-3  # Initial learning rate for the optimizer.
 EARLY_STOPPING_PATIENCE = 10  # Number of epochs with no improvement after which training stops early.
@@ -258,31 +260,21 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
     Returns:
         EQUICATPlusNonLinearReadout: The trained EQUICAT model.
     """
-    # Initialize the model and move it to the specified device
+    # Initialize model and move it to the specified device
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
     logging.info(f"Model initialized and moved to {device}")
 
-    # Initialize the optimizer
+    # Initialize optimizer
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     logging.info(f"Optimizer initialized with learning rate: {LEARNING_RATE}")
 
-    # Initialize the dataset
+    # Create dataset and calculate steps per epoch
     dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES)
     steps_per_epoch = len(dataset) // BATCH_SIZE + (1 if len(dataset) % BATCH_SIZE != 0 else 0)
     
-    # Initialize the learning rate scheduler
-    if scheduler_type == 'plateau':
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=SCHEDULER_GAMMA, patience=SCHEDULER_PATIENCE, verbose=True)
-    elif scheduler_type == 'step':
-        scheduler = StepLR(optimizer, step_size=SCHEDULER_STEP_SIZE, gamma=SCHEDULER_GAMMA)
-    elif scheduler_type == 'cosine':
-        scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
-    elif scheduler_type == 'onecycle':
-        scheduler = OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=NUM_EPOCHS, steps_per_epoch=steps_per_epoch, pct_start=SCHEDULER_PCT_START)
-    else:
-        raise ValueError(f"Unknown scheduler type: {scheduler_type}")
-    
+    # Initialize learning rate scheduler
+    scheduler = get_scheduler(scheduler_type, optimizer, NUM_EPOCHS, steps_per_epoch)
     logging.info(f"Learning rate scheduler initialized: {scheduler.__class__.__name__}")
 
     # Resume training from checkpoint if specified
@@ -295,8 +287,6 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
         if 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         logging.info(f"Resuming training from epoch {start_epoch}")
-
-    logging.info(f"Dataset initialized with {NUM_ENSEMBLES} ensembles")
 
     best_loss = float('inf')
     epochs_no_improve = 0
@@ -325,10 +315,11 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
 
                 embeddings = torch.stack(embeddings)
                 
-                # Process the embeddings using the ensemble combiner
+                # Log ensemble ID and embedding shape
+                logging.info(f"Ensemble ID: {ensemble_id}, Embedding shape: {embeddings.shape}")
+                
                 processed_embeddings = process_conformer_ensemble(embeddings)
                 
-                # Print detailed batch-level embeddings
                 print(f"\nBatch-level detailed embeddings for Ensemble {ensemble_id}:")
                 print_detailed_embeddings(processed_embeddings, level="Batch")
 
@@ -338,62 +329,56 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
                 for method, (scalar, vector) in processed_embeddings.items():
                     ensemble_embeddings[ensemble_id][method].append((scalar, vector))
 
-                # Compute positive loss (inter-ensemble)
+                # Compute positive loss
                 positive_loss = compute_positive_loss(processed_embeddings, embedding_type, normalize=False)
 
-                ensemble_ids = torch.full((len(batch_conformers),), ensemble_id, device=device)
-
+                # Handle padded batches
                 if num_added > 0:
                     original_batch_size = len(batch_conformers) - num_added
                     positive_loss = positive_loss[:original_batch_size]
 
-                loss = positive_loss.mean()
+                # Perform backward pass only if we have a valid positive loss
+                if torch.is_tensor(positive_loss) and positive_loss.nelement() > 0 and positive_loss.requires_grad:
+                    loss = positive_loss.mean()
 
-                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count+1}]")
-                logging.info(f"Embeddings shape: {embeddings.shape}, Positive Loss: {loss.item():.6f}")
-                logging.info(f"Ensemble IDs: {ensemble_ids}")
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        logging.error(f"NaN or Inf loss detected: {loss.item()}")
+                        continue
 
-                if pad_batches:
-                    logging.info(f"Number of randomly added conformers: {num_added}")
+                    loss.backward()
 
-                if torch.isnan(loss) or torch.isinf(loss):
-                    logging.error(f"NaN or Inf loss detected: {loss.item()}")
-                    continue
+                    clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
 
-                loss.backward()
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            grad_norm = param.grad.norm().item()
+                            if grad_norm == 0:
+                                logging.warning(f"Gradient for {name} is zero!")
+                            elif torch.isnan(param.grad).any():
+                                logging.warning(f"Gradient for {name} contains NaN values!")
+                            logging.info(f"Gradient norm for {name}: {grad_norm:.6f}")
 
-                clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+                    optimizer.step()
+                    
+                    if scheduler_type != 'plateau':
+                        scheduler.step()
+                    
+                    total_loss += loss.item()
+                    batch_count += 1
 
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_norm = param.grad.norm().item()
-                        if grad_norm == 0:
-                            logging.warning(f"Gradient for {name} is zero!")
-                        elif torch.isnan(param.grad).any():
-                            logging.warning(f"Gradient for {name} contains NaN values!")
-                        logging.info(f"Gradient norm for {name}: {grad_norm:.6f}")
-
-                optimizer.step()
-                
-                # Step the scheduler if it's not ReduceLROnPlateau
-                if scheduler_type != 'plateau':
-                    scheduler.step()
-                
-                total_loss += loss.item()
-                batch_count += 1
-
-                logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+                    logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Batch [{batch_count}], Positive Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+                else:
+                    logging.info(f"Skipping backward pass for batch with single conformer (Ensemble {ensemble_id})")
 
                 if device.type == 'cuda':
                     logging.info(f"GPU memory allocated: {torch.cuda.memory_allocated(device) / 1e6:.2f} MB")
                     logging.info(f"GPU memory cached: {torch.cuda.memory_reserved(device) / 1e6:.2f} MB")
 
-        # Compute negative loss using average ensemble embeddings
+        # Compute negative loss and total loss
         if len(ensemble_embeddings) > 1:
             avg_embeddings = compute_average_ensemble_embeddings(ensemble_embeddings)
-            plot_embeddings_pca(avg_embeddings, epoch+1, OUTPUT_PATH)
+            # plot_embeddings_pca(avg_embeddings, epoch+1, OUTPUT_PATH)
 
-            # Print ensemble averaged embeddings for all types
             print("\nEnsemble Average Embeddings:")
             for ensemble_id, methods in avg_embeddings.items():
                 print(f"Ensemble {ensemble_id}:")
@@ -408,14 +393,14 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
             
             logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Negative Loss: {negative_loss.item():.6f}")
 
-            # Combine positive and negative loss
-            total_loss = total_loss / batch_count + negative_loss
+            total_loss = (total_loss / batch_count if batch_count > 0 else 0) + negative_loss
         else:
-            total_loss = total_loss / batch_count
+            logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Not enough ensembles for negative loss")
+            total_loss = total_loss / batch_count if batch_count > 0 else 0
 
         logging.info(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Total Loss: {total_loss:.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
 
-        # Step the ReduceLROnPlateau scheduler if used
+        # Update plateau scheduler if used
         if scheduler_type == 'plateau':
             scheduler.step(total_loss)
 
@@ -431,6 +416,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
             }, checkpoint_path)
             logging.info(f"Checkpoint saved to {checkpoint_path}")
 
+        # Early stopping check
         if total_loss < best_loss - EARLY_STOPPING_DELTA:
             best_loss = total_loss
             epochs_no_improve = 0
@@ -493,17 +479,22 @@ def compute_positive_loss(embeddings, embedding_type, normalize=False):
             combined = torch.cat([scalar, vector.view(vector.shape[0], -1)], dim=1)
             if normalize:
                 combined = F.normalize(combined, p=2, dim=-1)
-            pairwise_distances = torch.cdist(combined, combined)
-            print(f"Positive pairwise distances for {method}: \n{pairwise_distances}")
-            print(f"Positive combined shape for {method}: {combined.shape}")
-            print(f"Positive combined stats for {method}: mean={combined.mean():.4f}, std={combined.std():.4f}")
-            loss += pairwise_distances.mean(dim=1)
-        return loss / len(embeddings)
+            if combined.shape[0] == 1:  # Single conformer case
+                loss += torch.tensor(0.0, device=combined.device, requires_grad=True)  # No positive loss for single conformer
+            else:
+                pairwise_distances = torch.cdist(combined, combined)
+                print(f"Positive pairwise distances for {method}: \n{pairwise_distances}")
+                print(f"Positive combined shape for {method}: {combined.shape}")
+                print(f"Positive combined stats for {method}: mean={combined.mean():.4f}, std={combined.std():.4f}")
+                loss += pairwise_distances.mean(dim=1)
+        return loss / len(embeddings) if len(embeddings) > 0 else torch.tensor(0.0, device=combined.device, requires_grad=True)
     else:
         scalar, vector = embeddings[embedding_type]
         combined = torch.cat([scalar, vector.view(vector.shape[0], -1)], dim=1)
         if normalize:
             combined = F.normalize(combined, p=2, dim=-1)
+        if combined.shape[0] == 1:  # Single conformer case
+            return torch.tensor(0.0, device=combined.device, requires_grad=True)
         pairwise_distances = torch.cdist(combined, combined)
         print(f"Positive pairwise distances for {embedding_type}: \n{pairwise_distances}")
         print(f"Positive combined shape for {embedding_type}: {combined.shape}")
