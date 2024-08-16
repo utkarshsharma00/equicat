@@ -214,7 +214,7 @@ def plot_individual_batch_loss_across_epochs(log_file):
     max_epoch = 0
     max_batch = 0
     
-    pattern = re.compile(r"Epoch \[(\d+)/\d+\], Batch \[(\d+)\], Loss: ([\d.]+)")
+    pattern = re.compile(r"Epoch \[(\d+)/\d+\], Batch \[(\d+)\], Positive Loss: ([\d.]+)")
     
     with open(log_file, 'r') as f:
         for line in f:
