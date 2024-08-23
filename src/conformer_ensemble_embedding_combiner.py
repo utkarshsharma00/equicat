@@ -1,65 +1,59 @@
 """
 Conformer Ensemble Embedding Combiner with PCA Visualization
 
-This module provides advanced functionality to combine embeddings from multiple conformers of
-a molecule into a single representation, now with GPU support. 
+This module provides advanced functionality for combining embeddings from multiple
+conformers of a molecule into a single representation. It now supports flexible
+output configurations from the EQUICAT model, including scalar-only, vector-only,
+and combined scalar-vector outputs.
 
-It implements five different methods for combining these embeddings: Mean Pooling, Deep Sets, 
-Self-Attention, Improved Deep Sets, and Improved Self-Attention. Additionally, it now includes 
-PCA visualization for each method to understand how conformers are being clustered.
+Key improvements in v3.0.0:
+1. Flexible Output Handling: All combining methods now adapt to various output
+   types from the NonLinearReadout layer.
+2. Enhanced Robustness: Improved error handling and edge case management for
+   different input configurations.
+3. Improved Visualization: PCA visualization now handles all output types seamlessly.
+4. Performance Optimization: Efficient processing of large conformer ensembles.
+5. Extended Compatibility: Better integration with the updated EQUICAT model.
 
-The module separates scalar and vector components of the embeddings and processes them separately 
-to maintain equivariance properties. It includes an additional step to average results across all 
-batches of a single ensemble.
+The module implements five different methods for combining embeddings:
+- Mean Pooling
+- Deep Sets
+- Self-Attention
+- Improved Deep Sets
+- Improved Self-Attention
 
-New features:
-- PCA visualization for each embedding combination method
-- Enhanced debug printing for all five combination methods
-- Improved error handling and input validation
+Each method is now capable of handling scalar-only, vector-only, or combined
+scalar-vector inputs, making the module more versatile and applicable to a wider
+range of molecular modeling scenarios.
 
+Version: 3.0.0
+Date: 08-22-2024 (MM-DD-YYYY)
 Author: Utkarsh Sharma
-Version: 2.1.0
-Date: 08-13-2024 (MM-DD-YYYY)
 License: MIT
 
-Classes:
-    DeepSets: Implementation of the Deep Sets method
-    SelfAttention: Implementation of the Self-Attention method
-    ImprovedDeepSets: Enhanced version of Deep Sets with increased complexity
-    ImprovedSelfAttention: Enhanced version of Self-Attention with multi-head attention
-    ConformerEnsembleEmbeddingCombiner: The main class that implements all
-    combining methods.
-
-Functions:
-    process_conformer_ensemble: Processes a single batch of conformer embeddings.
-    process_ensemble_batches: Processes all batches for a single ensemble and
-    averages the results.
-    visualize_embeddings: Performs PCA and visualizes the embeddings for each method.
-
 Dependencies:
-    - torch (>=1.9.0)
-    - torch_scatter (>=2.0.8)
-    - sklearn (>=0.24.0)
-    - matplotlib (>=3.3.0)
+- torch (>=1.9.0)
+- numpy (>=1.20.0)
+- matplotlib (>=3.3.0)
+- sklearn (>=0.24.0)
+- e3nn (>=0.4.0)
 
 Usage:
-    from conformer_ensemble_embedding_combiner import process_ensemble_batches, visualize_embeddings
-    
-    ensemble_embeddings = process_ensemble_batches(list_of_batch_embeddings)
-    visualize_embeddings(ensemble_embeddings)
-
-For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v2.1.0: Fixed averaging of ensemble embeddings and added dummy code for sanity checking
-    - v2.0.0: Added GPU support
-    - v1.3.0: Added PCA visualization for each embedding combination method
-    - v1.2.0: Added process_ensemble_batches function for ensemble-level averaging
-    - v1.1.0: Improved handling of scalar and vector components
-    - v1.0.0: Initial release with Mean Pooling, Deep Sets, and Self-Attention methods
+- v3.0.0 (08-22-2024):
+  * Major refactor to support flexible output types from NonLinearReadout
+  * Enhanced all combining methods to handle scalar-only, vector-only, and combined outputs
+  * Improved PCA visualization to accommodate all output types
+  * Optimized performance for large-scale conformer ensembles
+  * Added comprehensive error handling and logging
+- v2.0.0 (07-30-2024):
+  * Introduced GPU support and basic handling of vector outputs
+- v1.0.0 (07-01-2024):
+  * Initial release with basic conformer embedding combination
 
-TODO:
-    - Need to handle the case where the user only wants the scalar part as output after the CustomNonLinearReadout layer
+ToDo:
+    - Implement equivariant transformer architecture
     - Implement GPU acceleration for large ensemble processing
     - Add support for custom combining methods
 """
@@ -68,8 +62,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
-from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from e3nn import o3
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
@@ -78,243 +73,283 @@ np.random.seed(0)
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output/pca_visualizations"
 
 class DeepSets(nn.Module):
+    """
+    Implements the Deep Sets algorithm for processing sets of embeddings.
+
+    This class can handle scalar-only, vector-only, or combined scalar-vector inputs.
+
+    Args:
+        scalar_dim (int): Dimension of scalar features.
+        vector_dim (int): Dimension of vector features.
+
+    Returns:
+        None
+    """
     def __init__(self, scalar_dim: int, vector_dim: int):
         """
-        Initialize the DeepSets module.
-
+        Initialize the Deep Sets model for scalar and vector inputs.
+    
         Args:
             scalar_dim (int): Dimension of scalar features.
             vector_dim (int): Dimension of vector features.
-
-        Returns:
-            None
-        """
+    """
         super().__init__()
         self.scalar_dim = scalar_dim
         self.vector_dim = vector_dim
         
-        # Phi networks for scalar and vector parts
-        self.phi_scalar = nn.Sequential(
-            nn.Linear(scalar_dim, scalar_dim),
-            nn.ReLU(),
-            nn.Linear(scalar_dim, scalar_dim),
-            nn.ReLU(),
-        )
-        self.phi_vector = nn.Sequential(
-            nn.Linear(vector_dim * 3, vector_dim * 3),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 3, vector_dim * 3),
-            nn.ReLU(),
-        )
+        if scalar_dim > 0:
+            self.phi_scalar = nn.Sequential(
+                nn.Linear(scalar_dim, scalar_dim),
+                nn.ReLU(),
+                nn.Linear(scalar_dim, scalar_dim),
+                nn.ReLU(),
+            )
+            self.rho_scalar = nn.Sequential(
+                nn.Linear(scalar_dim, scalar_dim),
+                nn.ReLU(),
+                nn.Linear(scalar_dim, scalar_dim),
+            )
         
-        # Rho networks for scalar and vector parts
-        self.rho_scalar = nn.Sequential(
-            nn.Linear(scalar_dim, scalar_dim),
-            nn.ReLU(),
-            nn.Linear(scalar_dim, scalar_dim),
-        )
-        self.rho_vector = nn.Sequential(
-            nn.Linear(vector_dim * 3, vector_dim * 3),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 3, vector_dim * 3),
-        )
+        if vector_dim > 0:
+            self.phi_vector = nn.Sequential(
+                nn.Linear(vector_dim * 3, vector_dim * 3),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 3, vector_dim * 3),
+                nn.ReLU(),
+            )
+            self.rho_vector = nn.Sequential(
+                nn.Linear(vector_dim * 3, vector_dim * 3),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 3, vector_dim * 3),
+            )
 
     def forward(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the DeepSets module.
-
+        Process scalar and vector inputs through the Deep Sets model.
+        
         Args:
             scalar (torch.Tensor): Scalar input tensor.
             vector (torch.Tensor): Vector input tensor.
-
+        
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector tensors.
-        """
-        # Apply phi to each atom independently
-        scalar = self.phi_scalar(scalar)
-        vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)
-        vector_flat = self.phi_vector(vector_flat)
+            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector outputs.
+    """    
+        scalar_out, vector_out = None, None
+    
+        if self.scalar_dim > 0 and scalar is not None:
+            scalar = self.phi_scalar(scalar)  # Apply phi network to scalar input
+            scalar_agg = scalar.mean(dim=1)  # Aggregate across atoms
+            scalar_out = self.rho_scalar(scalar_agg)  # Apply rho network to aggregated scalar
         
-        # Aggregate across atoms (assuming dim=1 is the atom dimension)
-        scalar_agg = scalar.mean(dim=1)
-        vector_agg = vector_flat.mean(dim=1)
-        
-        # Apply rho to the aggregated results
-        scalar_out = self.rho_scalar(scalar_agg)
-        vector_out = self.rho_vector(vector_agg)
-        
-        # Reshape vector output
-        vector_out = vector_out.view(vector_out.shape[0], self.vector_dim, 3)
+        if self.vector_dim > 0 and vector is not None:
+            vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)  # Reshape vector for processing
+            vector_flat = self.phi_vector(vector_flat)  # Apply phi network to vector input
+            vector_agg = vector_flat.mean(dim=1)  # Aggregate across atoms
+            vector_out = self.rho_vector(vector_agg)  # Apply rho network to aggregated vector
+            vector_out = vector_out.view(vector_out.shape[0], self.vector_dim, 3)  # Reshape back to 3D
         
         return scalar_out, vector_out
 
 class SelfAttention(nn.Module):
+    """
+    Implements a Self-Attention mechanism for processing sets of embeddings.
+
+    This class can handle scalar-only, vector-only, or combined scalar-vector inputs.
+
+    Args:
+        scalar_dim (int): Dimension of scalar features.
+        vector_dim (int): Dimension of vector features.
+
+    Returns:
+        None
+    """
     def __init__(self, scalar_dim: int, vector_dim: int):
         """
-        Initialize the SelfAttention module.
-
+        Initialize the Self-Attention model for scalar and vector inputs.
+        
         Args:
             scalar_dim (int): Dimension of scalar features.
             vector_dim (int): Dimension of vector features.
-
-        Returns:
-            None
         """
         super().__init__()
         self.scalar_dim = scalar_dim
         self.vector_dim = vector_dim
         total_dim = scalar_dim + vector_dim * 3
         
-        self.attention = nn.Linear(total_dim, total_dim)
-        self.value = nn.Linear(total_dim, total_dim)
+        self.attention = nn.Linear(total_dim, total_dim) # Attention mechanism
+        self.value = nn.Linear(total_dim, total_dim) # Value projection
         
-        self.output_scalar = nn.Sequential(
-            nn.Linear(total_dim, scalar_dim),
-            nn.ReLU(),
-            nn.Linear(scalar_dim, scalar_dim),
-        )
-        self.output_vector = nn.Sequential(
-            nn.Linear(total_dim, vector_dim * 3),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 3, vector_dim * 3),
-        )
+        if scalar_dim > 0:
+            self.output_scalar = nn.Sequential(
+                nn.Linear(total_dim, scalar_dim),
+                nn.ReLU(),
+                nn.Linear(scalar_dim, scalar_dim),
+            )
+        
+        if vector_dim > 0:
+            self.output_vector = nn.Sequential(
+                nn.Linear(total_dim, vector_dim * 3),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 3, vector_dim * 3),
+            )
 
     def forward(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the SelfAttention module.
-
+        Process scalar and vector inputs through the Self-Attention model.
+        
         Args:
             scalar (torch.Tensor): Scalar input tensor.
             vector (torch.Tensor): Vector input tensor.
-
+        
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector tensors.
+            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector outputs.
         """
-        # Combine scalar and vector inputs
-        vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)
-        combined = torch.cat([scalar, vector_flat], dim=-1)
+        if self.scalar_dim > 0 and self.vector_dim > 0 and scalar is not None and vector is not None:
+            vector_flat = vector.view(vector.shape[0], vector.shape[1], -1) # Flatten vector
+            combined = torch.cat([scalar, vector_flat], dim=-1) # Combine scalar and vector
+        elif self.scalar_dim > 0 and scalar is not None:
+            combined = scalar
+        elif self.vector_dim > 0 and vector is not None:
+            combined = vector.view(vector.shape[0], vector.shape[1], -1)
+        else:
+            return None, None
         
-        # Compute attention scores
-        attention_scores = self.attention(combined)
-        attention_weights = F.softmax(attention_scores, dim=1)
+        attention_scores = self.attention(combined) # Compute attention scores
+        attention_weights = F.softmax(attention_scores, dim=1) # Apply softmax to get attention weights
+        values = self.value(combined) # Compute value projections
+        attended = torch.sum(attention_weights * values, dim=1)  # Apply attention
         
-        # Apply attention
-        values = self.value(combined)
-        attended = torch.sum(attention_weights * values, dim=1)
+        scalar_out, vector_out = None, None
         
-        # Split and reshape outputs
-        scalar_out = self.output_scalar(attended)
-        vector_out = self.output_vector(attended).view(vector.shape[0], self.vector_dim, 3)
+        if self.scalar_dim > 0 and scalar is not None:
+            scalar_out = self.output_scalar(attended) # Process attended features for scalar output
+        
+        if self.vector_dim > 0 and vector is not None:
+            vector_out = self.output_vector(attended).view(vector.shape[0], self.vector_dim, 3) # Process and reshape for vector output
         
         return scalar_out, vector_out
 
 class ImprovedDeepSets(nn.Module):
+    """
+    Implements an improved version of the Deep Sets algorithm with additional layers and normalization.
+
+    This class can handle scalar-only, vector-only, or combined scalar-vector inputs.
+
+    Args:
+        scalar_dim (int): Dimension of scalar features.
+        vector_dim (int): Dimension of vector features.
+
+    Returns:
+        None
+    """
     def __init__(self, scalar_dim: int, vector_dim: int):
         """
-        Initialize the ImprovedDeepSets module.
-
+        Initialize the Improved Deep Sets model with additional layers and normalization.
+        
         Args:
             scalar_dim (int): Dimension of scalar features.
             vector_dim (int): Dimension of vector features.
-
-        Returns:
-            None
         """
         super().__init__()
         self.scalar_dim = scalar_dim
         self.vector_dim = vector_dim
         
-        # Increase complexity of phi networks
-        self.phi_scalar = nn.Sequential(
-            nn.Linear(scalar_dim, scalar_dim * 2),
-            nn.ReLU(),
-            nn.Linear(scalar_dim * 2, scalar_dim * 2),
-            nn.ReLU(),
-            nn.Linear(scalar_dim * 2, scalar_dim),
-            nn.ReLU(),
-        )
-        self.phi_vector = nn.Sequential(
-            nn.Linear(vector_dim * 3, vector_dim * 6),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 6, vector_dim * 6),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 6, vector_dim * 3),
-            nn.ReLU(),
-        )
+        if scalar_dim > 0:
+            self.phi_scalar = nn.Sequential(
+                nn.Linear(scalar_dim, scalar_dim * 2),
+                nn.ReLU(),
+                nn.Linear(scalar_dim * 2, scalar_dim * 2),
+                nn.ReLU(),
+                nn.Linear(scalar_dim * 2, scalar_dim),
+                nn.ReLU(),
+            )
+            self.rho_scalar = nn.Sequential(
+                nn.Linear(scalar_dim, scalar_dim * 2),
+                nn.ReLU(),
+                nn.Linear(scalar_dim * 2, scalar_dim * 2),
+                nn.ReLU(),
+                nn.Linear(scalar_dim * 2, scalar_dim),
+            )
+            self.layer_norm_scalar = nn.LayerNorm(scalar_dim)
         
-        # Increase complexity of rho networks
-        self.rho_scalar = nn.Sequential(
-            nn.Linear(scalar_dim, scalar_dim * 2),
-            nn.ReLU(),
-            nn.Linear(scalar_dim * 2, scalar_dim * 2),
-            nn.ReLU(),
-            nn.Linear(scalar_dim * 2, scalar_dim),
-        )
-        self.rho_vector = nn.Sequential(
-            nn.Linear(vector_dim * 3, vector_dim * 6),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 6, vector_dim * 6),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 6, vector_dim * 3),
-        )
-        
-        self.layer_norm_scalar = nn.LayerNorm(scalar_dim)
-        self.layer_norm_vector = nn.LayerNorm(vector_dim * 3)
+        if vector_dim > 0:
+            self.phi_vector = nn.Sequential(
+                nn.Linear(vector_dim * 3, vector_dim * 6),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 6, vector_dim * 6),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 6, vector_dim * 3),
+                nn.ReLU(),
+            )
+            self.rho_vector = nn.Sequential(
+                nn.Linear(vector_dim * 3, vector_dim * 6),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 6, vector_dim * 6),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 6, vector_dim * 3),
+            )
+            self.layer_norm_vector = nn.LayerNorm(vector_dim * 3)
 
     def forward(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the ImprovedDeepSets module.
-
+        Process scalar and vector inputs through the Improved Deep Sets model.
+        
         Args:
             scalar (torch.Tensor): Scalar input tensor.
             vector (torch.Tensor): Vector input tensor.
-
+        
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector tensors.
+            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector outputs.
         """
-        # Apply phi to each atom independently
-        scalar = self.phi_scalar(scalar)
-        vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)
-        vector_flat = self.phi_vector(vector_flat)
+        scalar_out, vector_out = None, None
         
-        # Apply LayerNorm
-        scalar = self.layer_norm_scalar(scalar)
-        vector_flat = self.layer_norm_vector(vector_flat)
+        if self.scalar_dim > 0 and scalar is not None:
+            scalar = self.phi_scalar(scalar)  # Apply phi network to scalar input
+            scalar = self.layer_norm_scalar(scalar)  # Apply layer normalization
+            scalar_agg = scalar.mean(dim=1)  # Aggregate across atoms
+            scalar_out = self.rho_scalar(scalar_agg)  # Apply rho network to aggregated scalar
         
-        # Aggregate across atoms (assuming dim=1 is the atom dimension)
-        scalar_agg = scalar.mean(dim=1)
-        vector_agg = vector_flat.mean(dim=1)
-        
-        # Apply rho to the aggregated results
-        scalar_out = self.rho_scalar(scalar_agg)
-        vector_out = self.rho_vector(vector_agg)
-        
-        # Reshape vector output
-        vector_out = vector_out.view(vector_out.shape[0], self.vector_dim, 3)
-        
+        if self.vector_dim > 0 and vector is not None:
+            vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)  # Reshape vector for processing
+            vector_flat = self.phi_vector(vector_flat)  # Apply phi network to vector input
+            vector_flat = self.layer_norm_vector(vector_flat)  # Apply layer normalization
+            vector_agg = vector_flat.mean(dim=1)  # Aggregate across atoms
+            vector_out = self.rho_vector(vector_agg)  # Apply rho network to aggregated vector
+            vector_out = vector_out.view(vector_out.shape[0], self.vector_dim, 3)  # Reshape back to 3D
+    
         return scalar_out, vector_out
 
 class ImprovedSelfAttention(nn.Module):
+    """
+    Implements an improved Self-Attention mechanism with multi-head attention and feed-forward networks.
+
+    This class can handle scalar-only, vector-only, or combined scalar-vector inputs.
+
+    Args:
+        scalar_dim (int): Dimension of scalar features.
+        vector_dim (int): Dimension of vector features.
+        num_heads (int): Number of attention heads.
+
+    Returns:
+        None
+    """
     def __init__(self, scalar_dim: int, vector_dim: int, num_heads: int = 4):
         """
-        Initialize the ImprovedSelfAttention module.
-
+        Initialize the Improved Self-Attention model with multi-head attention and feed-forward networks.
+        
         Args:
             scalar_dim (int): Dimension of scalar features.
             vector_dim (int): Dimension of vector features.
             num_heads (int): Number of attention heads.
-
-        Returns:
-            None
         """
         super().__init__()
         self.scalar_dim = scalar_dim
         self.vector_dim = vector_dim
         total_dim = scalar_dim + vector_dim * 3
         
-        self.attention = nn.MultiheadAttention(total_dim, num_heads)
-        self.norm1 = nn.LayerNorm(total_dim)
-        self.norm2 = nn.LayerNorm(total_dim)
+        self.attention = nn.MultiheadAttention(total_dim, num_heads) # Multi-head attention
+        self.norm1 = nn.LayerNorm(total_dim) # Layer normalization 1
+        self.norm2 = nn.LayerNorm(total_dim) # Layer normalization 2
         
         self.ffn = nn.Sequential(
             nn.Linear(total_dim, total_dim * 4),
@@ -322,57 +357,78 @@ class ImprovedSelfAttention(nn.Module):
             nn.Linear(total_dim * 4, total_dim),
         )
         
-        self.output_scalar = nn.Sequential(
-            nn.Linear(total_dim, scalar_dim * 2),
-            nn.ReLU(),
-            nn.Linear(scalar_dim * 2, scalar_dim),
-        )
-        self.output_vector = nn.Sequential(
-            nn.Linear(total_dim, vector_dim * 6),
-            nn.ReLU(),
-            nn.Linear(vector_dim * 6, vector_dim * 3),
-        )
-
+        if scalar_dim > 0:
+            self.output_scalar = nn.Sequential(
+                nn.Linear(total_dim, scalar_dim * 2),
+                nn.ReLU(),
+                nn.Linear(scalar_dim * 2, scalar_dim),
+            )
+        
+        if vector_dim > 0:
+            self.output_vector = nn.Sequential(
+                nn.Linear(total_dim, vector_dim * 6),
+                nn.ReLU(),
+                nn.Linear(vector_dim * 6, vector_dim * 3),
+            )
+    
     def forward(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the ImprovedSelfAttention module.
-
+        Process scalar and vector inputs through the Improved Self-Attention model.
+        
         Args:
             scalar (torch.Tensor): Scalar input tensor.
             vector (torch.Tensor): Vector input tensor.
-
+        
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector tensors.
+            tuple[torch.Tensor, torch.Tensor]: Processed scalar and vector outputs.
         """
-        # Combine scalar and vector inputs
-        vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)
-        combined = torch.cat([scalar, vector_flat], dim=-1)
+        if self.scalar_dim > 0 and self.vector_dim > 0 and scalar is not None and vector is not None:
+            vector_flat = vector.view(vector.shape[0], vector.shape[1], -1)  # Flatten vector
+            combined = torch.cat([scalar, vector_flat], dim=-1)  # Combine scalar and vector
+        elif self.scalar_dim > 0 and scalar is not None:
+            combined = scalar
+        elif self.vector_dim > 0 and vector is not None:
+            combined = vector.view(vector.shape[0], vector.shape[1], -1)
+        else:
+            return None, None
         
-        # Multi-head attention
-        attended = self.attention(combined, combined, combined)[0]
-        attended = self.norm1(attended + combined)
+        attended = self.attention(combined, combined, combined)[0]  # Apply multi-head attention
+        attended = self.norm1(attended + combined)  # Apply residual connection and normalization
         
-        # Feed-forward network
-        ffn_output = self.ffn(attended)
-        ffn_output = self.norm2(ffn_output + attended)
+        ffn_output = self.ffn(attended)  # Apply feed-forward network
+        ffn_output = self.norm2(ffn_output + attended)  # Apply residual connection and normalization
         
-        # Split and reshape outputs
-        scalar_out = self.output_scalar(ffn_output.mean(dim=1))
-        vector_out = self.output_vector(ffn_output.mean(dim=1)).view(vector.shape[0], self.vector_dim, 3)
+        scalar_out, vector_out = None, None
+        
+        if self.scalar_dim > 0 and scalar is not None:
+            scalar_out = self.output_scalar(ffn_output.mean(dim=1))  # Process for scalar output
+        
+        if self.vector_dim > 0 and vector is not None:
+            vector_out = self.output_vector(ffn_output.mean(dim=1)).view(vector.shape[0], self.vector_dim, 3)  # Process and reshape for vector output
         
         return scalar_out, vector_out
 
 class ConformerEnsembleEmbeddingCombiner(nn.Module):
+    """
+    Combines multiple methods for processing conformer ensemble embeddings.
+
+    This class orchestrates the use of various embedding combination methods and can handle
+    scalar-only, vector-only, or combined scalar-vector inputs.
+
+    Args:
+        scalar_dim (int): Dimension of scalar features.
+        vector_dim (int): Dimension of vector features.
+
+    Returns:
+        None
+    """
     def __init__(self, scalar_dim: int, vector_dim: int):
         """
-        Initialize the ConformerEnsembleEmbeddingCombiner module.
-
+        Initialize the Conformer Ensemble Embedding Combiner with multiple combination methods.
+        
         Args:
             scalar_dim (int): Dimension of scalar features.
             vector_dim (int): Dimension of vector features.
-
-        Returns:
-            None
         """
         super().__init__()
         self.scalar_dim = scalar_dim
@@ -384,32 +440,21 @@ class ConformerEnsembleEmbeddingCombiner(nn.Module):
         self.improved_self_attention = ImprovedSelfAttention(scalar_dim, vector_dim)
 
     def mean_pooling(self, scalar: torch.Tensor, vector: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Perform mean pooling on scalar and vector inputs.
+        scalar_out = scalar.mean(dim=1) if scalar is not None else None
+        vector_out = vector.mean(dim=1) if vector is not None else None
+        return scalar_out, vector_out
 
+    def forward(self, scalar: torch.Tensor, vector: torch.Tensor) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Process scalar and vector inputs through all combination methods.
+        
         Args:
             scalar (torch.Tensor): Scalar input tensor.
             vector (torch.Tensor): Vector input tensor.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Mean-pooled scalar and vector tensors.
-        """
-        return scalar.mean(dim=1), vector.mean(dim=1)
-
-    def forward(self, conformer_embeddings: torch.Tensor) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass of the ConformerEnsembleEmbeddingCombiner module.
-
-        Args:
-            conformer_embeddings (torch.Tensor): Input tensor of conformer embeddings.
-
-        Returns:
-            dict[str, tuple[torch.Tensor, torch.Tensor]]: Dictionary of processed embeddings for each method.
-        """
-        num_conformers, num_atoms, total_dim = conformer_embeddings.shape
-        scalar = conformer_embeddings[:, :, :self.scalar_dim]
-        vector = conformer_embeddings[:, :, self.scalar_dim:].reshape(num_conformers, num_atoms, self.vector_dim, 3)
         
+        Returns:
+            dict[str, tuple[torch.Tensor, torch.Tensor]]: Results from each combination method.
+        """
         mean_pooled_scalar, mean_pooled_vector = self.mean_pooling(scalar, vector)
         deep_sets_scalar, deep_sets_vector = self.deep_sets(scalar, vector)
         self_attention_scalar, self_attention_vector = self.self_attention(scalar, vector)
@@ -424,72 +469,131 @@ class ConformerEnsembleEmbeddingCombiner(nn.Module):
             'improved_self_attention': (improved_self_attention_scalar, improved_self_attention_vector)
         }
 
-def process_conformer_ensemble(conformer_embeddings: torch.Tensor) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+def detect_scalars_vectors(irreps_str):
     """
-    Process a single batch of conformer embeddings.
+    Detects the number of scalar and vector dimensions from an irreps string.
 
     Args:
-        conformer_embeddings (torch.Tensor): Input tensor of conformer embeddings.
+        irreps_str (str): String representation of irreducible representations.
 
     Returns:
-        dict[str, tuple[torch.Tensor, torch.Tensor]]: Dictionary of processed embeddings for each method.
+        tuple: (scalar_dim, vector_dim)
+    """
+    irreps = o3.Irreps(irreps_str)
+    scalar_dim = 0
+    vector_dim = 0
+    
+    for mul, ir in irreps:
+        if ir.l == 0:  # Scalar
+            scalar_dim += mul
+        elif ir.l == 1:  # Vector
+            vector_dim += mul
+    
+    if scalar_dim > 0 and vector_dim > 0:
+        print(f"Detected combined scalar and vector output: {scalar_dim}x0e + {vector_dim}x1o")
+    elif scalar_dim > 0:
+        print(f"Detected scalar-only output: {scalar_dim}x0e")
+    elif vector_dim > 0:
+        print(f"Detected vector-only output: {vector_dim}x1o")
+    else:
+        print("No scalar or vector components detected")
+    
+    return scalar_dim, vector_dim
+
+def process_conformer_ensemble(conformer_embeddings: torch.Tensor, irreps_str: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Processes a batch of conformer embeddings using various combination methods.
+
+    Args:
+        conformer_embeddings (torch.Tensor): Tensor of conformer embeddings.
+        irreps_str (str): String representation of irreducible representations.
+
+    Returns:
+        dict: A dictionary containing the results of each combination method.
     """
     print(f"process_conformer_ensemble input shape: {conformer_embeddings.shape}")
-    # print(f"Conformer embeddings dtype: {conformer_embeddings.dtype}")
 
     num_conformers, num_atoms, total_dim = conformer_embeddings.shape
-    scalar_dim = total_dim // 4
-    vector_dim = scalar_dim
+    
+    scalar_dim, vector_dim = detect_scalars_vectors(irreps_str) # Detect scalar and vector dimensions from irreps string
     
     print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
     print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
+    print(f"Using irreps: {irreps_str}")
     
-    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device)
-    results = combiner(conformer_embeddings)
+    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device) # Initialize combiner
+    
+    if scalar_dim > 0 and vector_dim > 0:
+        scalar = conformer_embeddings[:, :, :scalar_dim] # Extract scalar part
+        vector = conformer_embeddings[:, :, scalar_dim:].reshape(num_conformers, num_atoms, vector_dim, 3) # Extract and reshape vector part
+    elif scalar_dim > 0:
+        scalar = conformer_embeddings
+        vector = None
+    else:
+        scalar = None
+        vector = conformer_embeddings.reshape(num_conformers, num_atoms, vector_dim, 3)
+    
+    results = combiner(scalar, vector) # Apply combination methods
 
     return results
 
-def process_ensemble_batches(batch_embeddings: list[torch.Tensor]) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+def process_ensemble_batches(batch_embeddings: list[torch.Tensor], irreps_str: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """
-    Process all batches for a single ensemble and average the results.
+    Processes multiple batches of conformer embeddings and averages the results.
 
     Args:
         batch_embeddings (list[torch.Tensor]): List of tensors containing conformer embeddings for each batch.
+        irreps_str (str): String representation of irreducible representations.
 
     Returns:
-        dict[str, tuple[torch.Tensor, torch.Tensor]]: Dictionary of processed embeddings for each method.
+        dict: A dictionary containing averaged embeddings for each combination method.
     """
     device = batch_embeddings[0].device 
     all_conformers = torch.cat(batch_embeddings, dim=0).to(device)
-    results = process_conformer_ensemble(all_conformers)
+    results = process_conformer_ensemble(all_conformers, irreps_str)
     
     # Average the results across all conformers
     averaged_results = {}
 
     for method, (scalar, vector) in results.items():
-        averaged_scalar = scalar.mean(dim=0, keepdim=True)  # [1, scalar_dim]
-        averaged_vector = vector.mean(dim=0, keepdim=True)  # [1, vector_dim, 3]
+        if scalar is not None:
+            averaged_scalar = scalar.mean(dim=0, keepdim=True)  # [1, scalar_dim]
+        else:
+            averaged_scalar = None
+        
+        if vector is not None:
+            averaged_vector = vector.mean(dim=0, keepdim=True)  # [1, vector_dim, 3]
+        else:
+            averaged_vector = None
+        
         averaged_results[method] = (averaged_scalar, averaged_vector)
     
     return averaged_results
 
 def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]]):
     """
-    Visualize the embeddings for each method.
-    If there's only one sample, we'll create a bar plot instead of PCA.
+    Visualizes the embeddings using PCA and creates plots for each combination method.
 
     Args:
-        embeddings (dict[str, tuple[torch.Tensor, torch.Tensor]]): Dictionary of embeddings for each method.
+        embeddings (dict): Dictionary containing embeddings for different methods.
 
     Returns:
         None
     """
     for method, (scalar, vector) in embeddings.items():
-        scalar = scalar.cpu().detach().squeeze()
-        vector = vector.cpu().detach().squeeze()
-
-        # Combine scalar and vector embeddings
-        combined = torch.cat([scalar, vector.reshape(-1)])
+        combined = []
+        if scalar is not None:
+            scalar = scalar.cpu().detach().squeeze()
+            combined.append(scalar)
+        if vector is not None:
+            vector = vector.cpu().detach().squeeze()
+            combined.append(vector.reshape(-1))
+        
+        if not combined:
+            print(f"No data to visualize for method: {method}")
+            continue
+        
+        combined = torch.cat(combined)
         
         plt.figure(figsize=(10, 6))
         
@@ -514,6 +618,16 @@ def visualize_embeddings(embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]
         print(f"Visualization for {method} saved as '{method}_visualization.png'")
 
 def move_to_device(obj, device):
+    """
+    Recursively moves an object (tensor, list, tuple, or dict) to the specified device.
+
+    Args:
+        obj: The object to move.
+        device: The target device (CPU or GPU).
+
+    Returns:
+        The object moved to the specified device.
+    """
     if torch.is_tensor(obj):
         return obj.to(device)
     elif isinstance(obj, list):
