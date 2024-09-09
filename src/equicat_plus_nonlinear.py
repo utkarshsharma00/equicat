@@ -174,7 +174,7 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         equicat_output_irreps = model_config['hidden_irreps']
 
         # Define the output irreps
-        self.output_irreps = "32x0e + 32x1o"  # You can adjust this as needed
+        self.output_irreps = "32x0e"  # You can adjust this as needed
 
         self.non_linear_readout = CustomNonLinearReadout(
             irreps_in=equicat_output_irreps,

@@ -58,109 +58,138 @@ TODO:
 
 import torch
 import random
+import logging
 import molli as ml
-import torch.utils.data
-import argparse
-import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from mace import data, tools
 from torch_geometric.data import Data, Batch
+from sklearn.cluster import KMeans
+import numpy as np
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
 np.random.seed(0)
 
-class ConformerDataset:
+# Constants
+CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
+CUTOFF = 6.0
+NUM_ENSEMBLES = 40
+SAMPLE_SIZE = 10
+BATCH_SIZE = 6
+LOG_FILE = "/Users/utkarsh/MMLI/equicat/output/data_loader.log"
+MAX_CONFORMERS = 20  # New constant for maximum number of conformers per ensemble
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(LOG_FILE),
+            logging.StreamHandler()
+        ]
+    )
+
+def select_diverse_conformers(conformers: List[np.ndarray], max_conformers: int) -> List[int]:
     """
-    A custom dataset class for handling conformer ensembles.
+    Select diverse conformers using K-means clustering.
     
-    Attributes:
-        conformer_ensemble: The source conformer ensemble.
-        cutoff: Cutoff distance for atomic interactions.
-        keys: List of keys for conformer ensembles.
+    Args:
+        conformers (List[np.ndarray]): List of conformer coordinates.
+        max_conformers (int): Maximum number of conformers to select.
+    
+    Returns:
+        List[int]: Indices of selected diverse conformers.
     """
+    n_conformers = len(conformers)
+    if n_conformers <= max_conformers:
+        return list(range(n_conformers))
+    
+    # Flatten conformers for clustering
+    flattened_conformers = [conf.flatten() for conf in conformers]
+    
+    # Perform K-means clustering
+    kmeans = KMeans(n_clusters=max_conformers, random_state=42)
+    kmeans.fit(flattened_conformers)
+    
+    # Select the conformer closest to each cluster center
+    selected_indices = []
+    for cluster in range(max_conformers):
+        cluster_conformers = [i for i, label in enumerate(kmeans.labels_) if label == cluster]
+        cluster_center = kmeans.cluster_centers_[cluster]
+        distances = [np.linalg.norm(flattened_conformers[i] - cluster_center) for i in cluster_conformers]
+        selected_indices.append(cluster_conformers[np.argmin(distances)])
+    
+    return selected_indices
 
-    def __init__(self, conformer_ensemble, cutoff, num_ensembles=5):
-        """
-        Initialize the ConformerDataset.
-
-        Args:
-            conformer_ensemble: Source conformer ensemble.
-            cutoff (float): Cutoff distance for atomic interactions.
-            num_ensembles (int): Number of ensembles to process.
-        """
+class ConformerDataset:
+    def __init__(self, conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE):
         self.conformer_ensemble = conformer_ensemble
         self.cutoff = cutoff
+        self.sample_size = sample_size
+
         with self.conformer_ensemble.reading():
             self.keys = list(self.conformer_ensemble.keys())[:num_ensembles]
-        print(f"Initialized ConformerDataset with {len(self.keys)} conformer ensembles")
+
+        self.total_samples = len(self.keys) // self.sample_size
+        self.current_sample = 0
+        self.sampled_keys = set()
+
+        # Pre-select diverse conformers for each ensemble
+        self.selected_conformers = {}
+        for key in self.keys:
+            with self.conformer_ensemble.reading():
+                conformer = self.conformer_ensemble[key]
+                coords = conformer.coords
+                selected_indices = select_diverse_conformers(coords, MAX_CONFORMERS)
+                self.selected_conformers[key] = selected_indices
+
+        logging.info(f"ConformerDataset initialized with {len(self.keys)} total ensembles, "
+                     f"sample size {self.sample_size}, and {self.total_samples} total samples")
+
+    def get_next_sample(self):
+        if self.current_sample >= self.total_samples:
+            return None
+
+        start_idx = self.current_sample * self.sample_size
+        end_idx = start_idx + self.sample_size
+        sample_keys = self.keys[start_idx:end_idx]
+
+        sample_data = []
+        for key in sample_keys:
+            with self.conformer_ensemble.reading():
+                conformer = self.conformer_ensemble[key]
+                coords = torch.tensor(conformer.coords, dtype=torch.float64)
+                atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
+                z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
+
+                selected_indices = self.selected_conformers[key]
+                atomic_data_list = []
+                for i in selected_indices:
+                    config = data.Configuration(
+                        atomic_numbers=atomic_numbers.numpy(),
+                        positions=coords[i].numpy()
+                    )
+                    atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
+                    torch_geo_data = Data(
+                        x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64),
+                        positions=atomic_data.positions,
+                        edge_index=atomic_data.edge_index,
+                        atomic_numbers=atomic_numbers,
+                        key=key
+                    )
+                    atomic_data_list.append(torch_geo_data)
+                sample_data.append((atomic_data_list, key))
+
+        self.current_sample += 1
+        logging.info(f"Loaded sample {self.current_sample} with {len(sample_data)} ensembles")
+        return sample_data
+
+    def reset(self):
+        self.current_sample = 0
+        random.shuffle(self.keys)
 
     def __len__(self):
-        """Return the number of conformer ensembles in the dataset."""
-        return len(self.keys)
-
-    def __getitem__(self, idx):
-        """
-        Retrieve a specific conformer ensemble by index.
-
-        Args:
-            idx (int): Index of the conformer ensemble to retrieve.
-
-        Returns:
-            tuple: List of atomic data and the ensemble key.
-        """
-        key = self.keys[idx]
-        with self.conformer_ensemble.reading():
-            conformer = self.conformer_ensemble[key]
-            coords = torch.tensor(conformer.coords, dtype=torch.float64) #! Changed to float64
-            # print(f"Conformer coords dtype: {coords.dtype}")
-            atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
-            print(f"Retrieved conformer ensemble {key} with {coords.shape[0]} conformers")
-            print(f"Atomic Numbers: {atomic_numbers}")
-            print(f"Coords shape: {coords.shape}") # Should be (num_conformers, num_atoms, 3)
-
-            z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
-
-            atomic_data_list = []
-            for i in range(coords.shape[0]):
-                # Create a Configuration object for each conformer
-                config = data.Configuration(
-                    atomic_numbers=atomic_numbers.numpy(),
-                    positions=coords[i].numpy()
-                )
-                
-                # Use MACE's AtomicData.from_config to generate atomic data with correct edge_index
-                atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
-                
-                # Create PyTorch Geometric Data object with the correct edge_index
-                torch_geo_data = Data(
-                    x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64), #! Changed to float64
-                    positions=atomic_data.positions,
-                    edge_index=atomic_data.edge_index,
-                    atomic_numbers=atomic_numbers,
-                    key=key
-                )
-                
-                atomic_data_list.append(torch_geo_data)
-
-            print(f"Number of conformers in atomic_data_list: {len(atomic_data_list)}")
-
-            return atomic_data_list, key
-
-def compute_avg_num_neighbors(batch):
-    """
-    Compute the average number of neighbors for atoms in a batch.
-
-    Args:
-        batch: A batch of conformer data.
-
-    Returns:
-        float: Average number of neighbors.
-    """
-    _, receivers = batch.edge_index
-    _, counts = torch.unique(receivers, return_counts=True)
-    avg_num_neighbors = torch.mean(counts.float())
-    return avg_num_neighbors.item()
+        return self.total_samples
 
 def custom_collate(batch):
     """
@@ -204,99 +233,97 @@ def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batc
     
     return batch + added_conformers, num_to_add
 
-def process_data(conformer_dataset, batch_size=32, device=torch.device("cuda"), pad_batches=False):
-    """
-    Process conformer data in batches, with support for GPU processing and optional consistent batch sizes.
+def compute_avg_num_neighbors(batch):
+    _, receivers = batch.edge_index
+    _, counts = torch.unique(receivers, return_counts=True)
+    avg_num_neighbors = torch.mean(counts.float())
+    return avg_num_neighbors.item()
 
-    Args:
-        conformer_dataset: The ConformerDataset to process.
-        batch_size (int): Number of conformers to process in each batch.
-        device (torch.device): The device to move the data to (CPU or GPU).
-        pad_batches (bool): Whether to pad batches to ensure consistent size.
+def process_data(conformer_dataset, batch_size=BATCH_SIZE, device=None, pad_batches=False):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    logging.info(f"Using device: {device}")
 
-    Yields:
-        tuple: Batch of conformers, unique atomic numbers, average number of neighbors, ensemble id, and number of added conformers.
-    """
-    total_batches = 0
-    total_conformers = 0
+    sample_count = 0
+    while True:
+        sample = conformer_dataset.get_next_sample()
+        if sample is None:
+            break  # End of dataset
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset=conformer_dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=lambda x: x[0]
-    )
+        sample_count += 1
+        logging.info(f"Processing sample {sample_count}")
 
-    for ensemble_id, (atomic_data_list, key) in enumerate(data_loader):
-        num_conformers = len(atomic_data_list)
-        total_conformers += num_conformers
+        for ensemble_id, (atomic_data_list, key) in enumerate(sample):
+            num_conformers = len(atomic_data_list)
+            logging.info(f"Processing ensemble {key} with {num_conformers} conformers")
 
-        print(f"\nProcessing Conformer Ensemble: {key}")
-        print(f"Number of conformers in this ensemble: {num_conformers}")
-        print(f"Batch size: {batch_size}")
-        print(f"Padding enabled: {pad_batches}")
+            for i in range(0, num_conformers, batch_size):
+                batch_conformers = atomic_data_list[i:i+batch_size]
+                original_batch_size = len(batch_conformers)
 
-        for i in range(0, num_conformers, batch_size):
-            batch_conformers = atomic_data_list[i:i+batch_size]
-            original_batch_size = len(batch_conformers)
-            
-            if pad_batches:
-                batch_conformers, num_added = pad_batch(batch_conformers, atomic_data_list, batch_size, pad_batches)
-                print(f"Padded batch: original size {original_batch_size}, padded size {len(batch_conformers)}, num_added {num_added}")
-            else:
-                num_added = 0
-                # print(f"Unpadded batch: size {len(batch_conformers)}")
-            
-            total_batches += 1
+                if pad_batches:
+                    batch_conformers, num_added = pad_batch(batch_conformers, atomic_data_list, batch_size, pad_batches)
+                else:
+                    num_added = 0
 
-            print(f"\nBatch {total_batches} in Ensemble: {key}")
-            print(f"Number of conformers in this batch before padding: {original_batch_size}")
-            print(f"Number of conformers in this batch after padding: {len(batch_conformers)}")
-            
-            if pad_batches:
-                print(f"Number of randomly added conformers: {num_added}")
+                logging.info(f"Batch for ensemble {key}: {original_batch_size} conformers, {num_added} added")
 
-            # Move batch_conformers to the specified device
-            batch_conformers = [conformer.to(device) for conformer in batch_conformers]
+                try:
+                    batch_conformers = [conformer.to(device) for conformer in batch_conformers]
+                except AssertionError as e:
+                    logging.warning(f"Failed to move tensors to {device}. Error: {str(e)}")
+                    logging.info("Falling back to CPU")
+                    device = torch.device("cpu")
+                    batch_conformers = [conformer.to(device) for conformer in batch_conformers]
 
-            unique_atomic_numbers = []
+                unique_atomic_numbers = []
+                for conformer in batch_conformers:
+                    for atomic_number in conformer.atomic_numbers.cpu():
+                        if atomic_number.item() not in unique_atomic_numbers:
+                            unique_atomic_numbers.append(atomic_number.item())
 
-            for conformer in batch_conformers:
-                for atomic_number in conformer.atomic_numbers.cpu():  # Move to CPU for processing
-                    if atomic_number.item() not in unique_atomic_numbers:
-                        unique_atomic_numbers.append(atomic_number.item())
+                avg_num_neighbors = sum(compute_avg_num_neighbors(conformer) for conformer in batch_conformers) / len(batch_conformers)
 
-            avg_num_neighbors = sum(compute_avg_num_neighbors(conformer) for conformer in batch_conformers) / len(batch_conformers)
-        
-            print(f"Unique Atomic Numbers: {unique_atomic_numbers}")
-            print(f"Average number of neighbors: {avg_num_neighbors:.2f}")
+                yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added, key
 
-            yield batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added
+        logging.info(f"Finished processing sample {sample_count}")
+        yield None  # Indicate end of current sample
 
-        print(f"\nFinished processing Conformer Ensemble: {key}")
-        print("=" * 50)
+def main():
+    setup_logging()
 
-    print(f"\nTotal number of batches processed: {total_batches}")
-    print(f"Total number of conformers processed: {total_conformers}")
+    logging.info(f"Loading conformer ensemble from {CONFORMER_LIBRARY_PATH}")
+    conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
 
-def move_to_device(obj, device):
-    """
-    Recursively moves an object to the specified device.
+    dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
 
-    Args:
-        obj: The object to move (can be a tensor, list, tuple, or dict)
-        device: The device to move the object to
+    logging.info(f"Dataset created with {len(dataset)} total ensembles")
 
-    Returns:
-        The object moved to the specified device
-    """
-    if torch.is_tensor(obj):
-        return obj.to(device)
-    elif isinstance(obj, list):
-        return [move_to_device(item, device) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(move_to_device(item, device) for item in obj)
-    elif isinstance(obj, dict):
-        return {key: move_to_device(value, device) for key, value in obj.items()}
-    else:
-        return obj
+    for i, data in enumerate(process_data(dataset, batch_size=BATCH_SIZE, pad_batches=False)):
+        if data is None:
+            logging.info("End of sample reached")
+            continue
+
+        batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added, key = data
+
+        logging.info(f"\nProcessing batch {i+1}")
+        logging.info(f"  Ensemble ID: {ensemble_id}")
+        logging.info(f"  Ensemble Key: {key}")
+        logging.info(f"  Batch size: {len(batch_conformers)}")
+        logging.info(f"  Unique atomic numbers: {unique_atomic_numbers}")
+        logging.info(f"  Average number of neighbors: {avg_num_neighbors:.2f}")
+        logging.info(f"  Number of added conformers: {num_added}")
+
+        for j, conformer in enumerate(batch_conformers):
+            logging.info(f"  Conformer {j+1} details:")
+            logging.info(f"    Number of atoms: {conformer.num_nodes}")
+            logging.info(f"    Number of edges: {conformer.num_edges}")
+            logging.info(f"    Atomic numbers: {conformer.atomic_numbers}")
+            logging.info(f"    Positions shape: {conformer.positions.shape}")
+            logging.info(f"    Edge index shape: {conformer.edge_index.shape}")
+
+    logging.info("Data processing test completed.")
+
+if __name__ == "__main__":
+    main()
