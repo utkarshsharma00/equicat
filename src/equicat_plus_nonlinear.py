@@ -24,7 +24,7 @@ improved flexibility and performance.
 
 Author: Utkarsh Sharma
 Version: 3.0.0
-Date: 08-22-2024 (MM-DD-YYYY)
+Date: 09-10-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
