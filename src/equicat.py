@@ -20,7 +20,7 @@ processes input molecular data through various stages of the network.
 
 Author: Utkarsh Sharma
 Version: 2.0.0
-Date: 08-01-2024 (MM-DD-YYYY)
+Date: 09-10-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
