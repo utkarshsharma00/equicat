@@ -1,33 +1,28 @@
 """
-Conformer Ensemble Embedding Combiner with PCA Visualization
+Conformer Ensemble Embedding Combiner
 
 This module provides advanced functionality for combining embeddings from multiple
-conformers of a molecule into a single representation. It now supports flexible
+conformers of a molecule into a single representation. It supports flexible
 output configurations from the EQUICAT model, including scalar-only, vector-only,
 and combined scalar-vector outputs.
 
-Key improvements in v3.0.0:
-1. Flexible Output Handling: All combining methods now adapt to various output
-   types from the NonLinearReadout layer.
-2. Enhanced Robustness: Improved error handling and edge case management for
-   different input configurations.
-3. Improved Visualization: PCA visualization now handles all output types seamlessly.
-4. Performance Optimization: Efficient processing of large conformer ensembles.
-5. Extended Compatibility: Better integration with the updated EQUICAT model.
+Key components:
+1. DeepSets: Implements the Deep Sets algorithm for set-based embedding combination.
+2. SelfAttention: Applies self-attention mechanism to process conformer embeddings.
+3. ImprovedDeepSets: An enhanced version of Deep Sets with additional layers and normalization.
+4. ImprovedSelfAttention: Incorporates multi-head attention and feed-forward networks.
+5. ConformerEnsembleEmbeddingCombiner: Orchestrates multiple embedding combination methods.
+6. Utility functions for processing and visualizing embeddings.
 
-The module implements five different methods for combining embeddings:
-- Mean Pooling
-- Deep Sets
-- Self-Attention
-- Improved Deep Sets
-- Improved Self-Attention
+New functionalities in v3.1.1:
+1. detect_scalars_vectors(): Improved detection and logging of scalar and vector dimensions 
+   from irreps string.
+2. process_molecule_conformers(): New function to process and average embeddings for all 
+   conformers of a single molecule.
+3. Enhanced error handling and logging throughout the module.
 
-Each method is now capable of handling scalar-only, vector-only, or combined
-scalar-vector inputs, making the module more versatile and applicable to a wider
-range of molecular modeling scenarios.
-
-Version: 3.0.0
-Date: 08-22-2024 (MM-DD-YYYY)
+Version: 3.1.1
+Date: 09-10-2024 (MM-DD-YYYY)
 Author: Utkarsh Sharma
 License: MIT
 
@@ -39,8 +34,23 @@ Dependencies:
 - e3nn (>=0.4.0)
 
 Usage:
+    # Initialize the combiner
+    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim)
+    
+    # Process conformer embeddings
+    results = process_conformer_ensemble(conformer_embeddings, irreps_str)
+    
+    # Process molecule conformers
+    molecule_results = process_molecule_conformers(molecule_embeddings, irreps_str)
+    
+    # Visualize embeddings
+    visualize_embeddings(results)
 
 Change Log:
+- v3.1.1 (09-10-2024):
+  * Improved detect_scalars_vectors() with better logging
+  * Added process_molecule_conformers() for single molecule processing
+  * Enhanced error handling and input validation
 - v3.0.0 (08-22-2024):
   * Major refactor to support flexible output types from NonLinearReadout
   * Enhanced all combining methods to handle scalar-only, vector-only, and combined outputs
@@ -53,9 +63,12 @@ Change Log:
   * Initial release with basic conformer embedding combination
 
 ToDo:
-    - Implement equivariant transformer architecture
-    - Implement GPU acceleration for large ensemble processing
-    - Add support for custom combining methods
+    - Implement equivariant transformer architecture for improved embedding combination
+    - Add support for custom combining methods defined by users
+    - Enhance visualization with interactive plots and 3D representations
+    - Optimize memory usage for very large conformer ensembles
+    - Add unit tests and integration tests for robustness
+    - Implement logging system for better debugging and monitoring
 """
 
 import torch
@@ -409,19 +422,6 @@ class ImprovedSelfAttention(nn.Module):
         return scalar_out, vector_out
 
 class ConformerEnsembleEmbeddingCombiner(nn.Module):
-    """
-    Combines multiple methods for processing conformer ensemble embeddings.
-
-    This class orchestrates the use of various embedding combination methods and can handle
-    scalar-only, vector-only, or combined scalar-vector inputs.
-
-    Args:
-        scalar_dim (int): Dimension of scalar features.
-        vector_dim (int): Dimension of vector features.
-
-    Returns:
-        None
-    """
     def __init__(self, scalar_dim: int, vector_dim: int):
         """
         Initialize the Conformer Ensemble Embedding Combiner with multiple combination methods.
@@ -489,15 +489,7 @@ def detect_scalars_vectors(irreps_str):
         elif ir.l == 1:  # Vector
             vector_dim += mul
     
-    if scalar_dim > 0 and vector_dim > 0:
-        print(f"Detected combined scalar and vector output: {scalar_dim}x0e + {vector_dim}x1o")
-    elif scalar_dim > 0:
-        print(f"Detected scalar-only output: {scalar_dim}x0e")
-    elif vector_dim > 0:
-        print(f"Detected vector-only output: {vector_dim}x1o")
-    else:
-        print("No scalar or vector components detected")
-    
+    print(f"Detected dimensions - Scalar: {scalar_dim}, Vector: {vector_dim}")
     return scalar_dim, vector_dim
 
 def process_conformer_ensemble(conformer_embeddings: torch.Tensor, irreps_str: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
@@ -515,17 +507,16 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor, irreps_str: s
 
     num_conformers, num_atoms, total_dim = conformer_embeddings.shape
     
-    scalar_dim, vector_dim = detect_scalars_vectors(irreps_str) # Detect scalar and vector dimensions from irreps string
+    scalar_dim, vector_dim = detect_scalars_vectors(irreps_str)
     
     print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
-    print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
     print(f"Using irreps: {irreps_str}")
     
-    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device) # Initialize combiner
+    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device)
     
     if scalar_dim > 0 and vector_dim > 0:
-        scalar = conformer_embeddings[:, :, :scalar_dim] # Extract scalar part
-        vector = conformer_embeddings[:, :, scalar_dim:].reshape(num_conformers, num_atoms, vector_dim, 3) # Extract and reshape vector part
+        scalar = conformer_embeddings[:, :, :scalar_dim]
+        vector = conformer_embeddings[:, :, scalar_dim:].reshape(num_conformers, num_atoms, vector_dim, 3)
     elif scalar_dim > 0:
         scalar = conformer_embeddings
         vector = None
@@ -533,36 +524,33 @@ def process_conformer_ensemble(conformer_embeddings: torch.Tensor, irreps_str: s
         scalar = None
         vector = conformer_embeddings.reshape(num_conformers, num_atoms, vector_dim, 3)
     
-    results = combiner(scalar, vector) # Apply combination methods
+    results = combiner(scalar, vector)
 
     return results
 
-def process_ensemble_batches(batch_embeddings: list[torch.Tensor], irreps_str: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+def process_molecule_conformers(molecule_embeddings: torch.Tensor, irreps_str: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """
-    Processes multiple batches of conformer embeddings and averages the results.
+    Processes conformers of a single molecule and combines their embeddings.
 
     Args:
-        batch_embeddings (list[torch.Tensor]): List of tensors containing conformer embeddings for each batch.
+        molecule_embeddings (torch.Tensor): Tensor of conformer embeddings for a single molecule.
         irreps_str (str): String representation of irreducible representations.
 
     Returns:
-        dict: A dictionary containing averaged embeddings for each combination method.
+        dict: A dictionary containing the combined embeddings for the molecule.
     """
-    device = batch_embeddings[0].device 
-    all_conformers = torch.cat(batch_embeddings, dim=0).to(device)
-    results = process_conformer_ensemble(all_conformers, irreps_str)
+    results = process_conformer_ensemble(molecule_embeddings, irreps_str)
     
-    # Average the results across all conformers
+    # Average the results across all conformers of the molecule
     averaged_results = {}
-
     for method, (scalar, vector) in results.items():
         if scalar is not None:
-            averaged_scalar = scalar.mean(dim=0, keepdim=True)  # [1, scalar_dim]
+            averaged_scalar = scalar.mean(dim=0, keepdim=True)
         else:
             averaged_scalar = None
         
         if vector is not None:
-            averaged_vector = vector.mean(dim=0, keepdim=True)  # [1, vector_dim, 3]
+            averaged_vector = vector.mean(dim=0, keepdim=True)
         else:
             averaged_vector = None
         
