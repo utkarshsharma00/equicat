@@ -2,35 +2,42 @@
 EQUICAT Model Training Script
 
 This script implements the training pipeline for the EQUICAT model, a neural network 
-designed for molecular conformer analysis. It includes data loading, model initialization, 
-training loop, logging functionality, early stopping, robust error handling, and features
-model checkpointing for easy resumption of training.
+designed for molecular conformer analysis. It handles multi-molecule samples, performs
+contrastive learning, and includes advanced logging and visualization features.
 
-Key features:
+Key components:
 1. GPU acceleration with CUDA support
-2. Optional Conformer Padding: Handles variable-sized conformer ensembles when enabled
-3. Customizable logging setup with detailed gradient and loss tracking
-4. Dynamic calculation of average neighbors and unique atomic numbers
-5. Integrated contrastive loss calculation for semi-supervised learning
-6. Gradient clipping and comprehensive logging during training
-7. Configurable model parameters and training hyperparameters
-8. Total runtime measurement
-9. Early stopping to prevent overfitting
-10. Robust error handling and NaN detection
-11. GPU memory tracking
-12. Model checkpointing for training resumption
-13. Normalized embedding comparison in loss calculations
-14. Graceful handling of single-conformer batches
+2. Customizable logging setup with detailed gradient and loss tracking
+3. Dynamic calculation of average neighbors and unique atomic numbers
+4. Contrastive loss calculation for multi-molecule samples
+5. Gradient clipping and comprehensive logging during training
+6. Configurable model parameters and training hyperparameters
+7. Learning rate scheduling with multiple options
+8. Model checkpointing for training resumption
+9. Embedding tracking and visualization across epochs
 
-New Features:
-- Graceful Single-Conformer Handling: The training process now gracefully handles batches
-  with single conformers by skipping the backward pass and keeping the positive loss at zero.
-  This ensures that the model continues to learn from multi-conformer batches and negative
-  examples without introducing errors or halting training due to single-conformer cases.
+New functionalities in v3.0:
+1. Multi-molecule sample processing: Handles batches of molecule samples
+2. Contrastive learning: Implements contrastive loss for molecule embeddings
+3. Enhanced logging: Tracks gradients and molecule embeddings across epochs
+4. Flexible embedding combination: Supports various embedding types
+5. Robust error handling: Gracefully handles single-conformer cases
+
+Training process:
+1. Loads X molecules, divided into X1, X2, X3, ... Xn samples of Y conformers each
+2. For each epoch:
+   a. Processes all X1, X2, X3, ... Xn samples sequentially
+   b. For each sample:
+      - Performs forward pass for all molecules in the sample
+      - Calculates contrastive loss for the sample
+      - Performs backward propagation
+      - Updates model parameters
+   c. Logs gradients, loss, and embeddings
+   d. Adjusts learning rate based on chosen scheduler
 
 Author: Utkarsh Sharma
-Version: 2.5.0
-Date: 08-15-2024 (MM-DD-YYYY)
+Version: 3.0.0
+Date: 09-10-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -42,11 +49,14 @@ Dependencies:
     - sklearn (>=0.24.0)
 
 Usage:
-    python train.py [--pad_batches] [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] [--resume_from_checkpoint CHECKPOINT_PATH]
+    python train.py [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] 
+                    [--resume_from_checkpoint CHECKPOINT_PATH]
+                    [--scheduler {plateau,step,cosine,onecycle}]
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v3.0.0: Implemented multi-molecule sample processing and contrastive learning
     - v2.5.0: Added graceful handling of single-conformer batches
     - v2.4.0: Added advanced learning rate scheduling options
     - v2.3.0: Added model checkpointing and integrated contrastive loss calculation
@@ -60,13 +70,18 @@ Change Log:
     - v1.0.0: Initial implementation of EQUICAT training pipeline
 
 TODO:
-    - Add support for distributed training
-    - Implement weighted loss calculation to account for conformer duplications
+    - Implement distributed training for multi-GPU setups
+    - Add support for dynamic sample sizes and ensemble counts
+    - Implement more advanced contrastive learning techniques
+    - Enhance visualization with interactive embedding plots
+    - Optimize memory usage for processing larger molecule sets
+    - Implement adaptive learning rate techniques
+    - Add support for transfer learning from pre-trained models
 """
 
 import torch
 import torch.nn.functional as F
-import molli as ml  
+import molli as ml
 import logging
 import sys
 import numpy as np
@@ -75,7 +90,6 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import argparse
 import os
-import random
 from e3nn import o3
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
@@ -85,59 +99,27 @@ from mace.tools import to_numpy
 from collections import OrderedDict
 from sklearn.decomposition import PCA
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
-from data_loader import ConformerDataset, process_data
-from conformer_ensemble_embedding_combiner import process_conformer_ensemble, process_ensemble_batches
+from data_loader import ConformerDataset
+from conformer_ensemble_embedding_combiner import process_molecule_conformers
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR
-from torch.cuda.amp import GradScaler, autocast
 
-torch.set_default_dtype(torch.float32)
+# Constants
+CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
+# # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
+# # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
+NUM_ENSEMBLES = 30  # Total number of molecules
+SAMPLE_SIZE = 6  # Number of molecules per sample
+MAX_CONFORMERS = 20  # Maximum number of conformers per molecule
+CUTOFF = 6.0
+LEARNING_RATE = 1e-3
+EPOCHS = 10  # Total number of epochs
+GRADIENT_CLIP_VALUE = 1.0
+CHECKPOINT_INTERVAL = 5
+
+torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
 np.random.seed(0)
-
-# Global constants
-CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib" # Path to the conformer library file containing molecular structures.
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output" # Directory where training outputs, such as logs, models, and visualizations, will be saved.
-# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
-# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 20  # Number of ensemble models to be trained and averaged.
-CUTOFF = 6.0  # Cutoff distance for interaction calculations or neighborhood definition.
-NUM_EPOCHS = 25  # Total number of training epochs.
-BATCH_SIZE = 6  # Number of samples per batch during training.
-SAMPLE_SIZE = 4 
-MAX_PREVIOUS_SAMPLES = 10  # Maximum number of previous samples to consider for cross-sample loss.
-LEARNING_RATE = 1e-3  # Initial learning rate for the optimizer.
-EARLY_STOPPING_PATIENCE = 10  # Number of epochs with no improvement after which training stops early.
-EARLY_STOPPING_DELTA = 1e-4  # Minimum change in monitored metric to qualify as an improvement.
-GRADIENT_CLIP_VALUE = 1.0  # Maximum allowed value for gradients to prevent exploding gradients.
-EPSILON = 1e-8  # Small constant to avoid division by zero in numerical computations.
-VISUALIZATION_INTERVAL = 1  # Number of epochs between visualizations or logging of results.
-CHECKPOINT_INTERVAL = 5  # Number of epochs between saving model checkpoints.
-SCHEDULER_STEP_SIZE = 5  # Number of epochs after which the learning rate is reduced in StepLR.
-SCHEDULER_GAMMA = 0.1  # Multiplicative factor by which the learning rate is reduced in schedulers.
-SCHEDULER_PATIENCE = 5  # Number of epochs with no improvement before reducing the learning rate in ReduceLROnPlateau.
-SCHEDULER_T_MAX = NUM_EPOCHS  # Maximum number of epochs before restarting the learning rate schedule in CosineAnnealingLR.
-SCHEDULER_PCT_START = 0.3  # Percentage of the total training duration during which the learning rate increases in OneCycleLR.
-ACCUMULATION_STEPS = 4
-
-def print_gpu_memory():
-    if torch.cuda.is_available():
-        logging.info(f"GPU Memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated, {torch.cuda.memory_reserved() / 1e9:.2f} GB reserved")
-
-def clear_gpu_memory():
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        print_gpu_memory()
-
-def get_device():
-    """
-    Select the best available device (CUDA if available, else CPU).
-
-    Returns:
-        torch.device: The selected device
-    """
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
 
 def setup_logging(log_file):
     """
@@ -145,128 +127,213 @@ def setup_logging(log_file):
 
     Args:
         log_file (str): Path to the log file.
-
-    Returns:
-        None
     """
-    # Clear existing log file
     with open(log_file, 'w') as f:
-        f.write("")  # This will clear the file
+        f.write("")
     
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file, mode='w'),  # 'w' mode overwrites the file
+            logging.FileHandler(log_file, mode='w'),
             logging.StreamHandler(sys.stdout)
         ]
     )
 
-def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
-    total_neighbors = 0
-    total_atoms = 0
-    unique_atomic_numbers = OrderedDict()
-    
-    for batch_data in process_data(dataset, batch_size=BATCH_SIZE, device=device):
-        if batch_data is None:
-            continue
-        batch_conformers, _, _, _, _, key = batch_data  # Unpack all 6 values
-        for conformer in batch_conformers:
-            conformer = conformer.to(device)
-            total_neighbors += conformer.edge_index.shape[1]
-            total_atoms += conformer.positions.shape[0]
-            for atomic_number in conformer.atomic_numbers.cpu().tolist():
-                unique_atomic_numbers[atomic_number] = None
-
-    avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
-    return avg_neighbors, list(unique_atomic_numbers.keys())
-
-def plot_embeddings_pca(embeddings, epoch, OUTPUT_PATH):
+def get_lr(optimizer):
     """
-    Perform PCA on the embeddings and create a visualization.
+    Get the current learning rate from the optimizer.
 
     Args:
-        embeddings (dict): Dictionary containing embeddings for each ensemble and method.
-        epoch (int): Current training epoch.
-        OUTPUT_PATH (str): Directory to save the plot.
+        optimizer (torch.optim.Optimizer): The optimizer object.
 
     Returns:
-        None
+        float: The current learning rate.
     """
-    # Combine all embeddings
-    all_embeddings = []
-    ensemble_labels = []
-    for ensemble_id, methods in embeddings.items():
-        for method, (scalar, vector) in methods.items():
-            combined = torch.cat([scalar.view(-1), vector.view(-1)])
-            all_embeddings.append(combined.detach().cpu().numpy())
-            ensemble_labels.append(ensemble_id)
-
-    all_embeddings = np.array(all_embeddings)
-
-    # Perform PCA
-    pca = PCA(n_components=2)
-    embeddings_2d = pca.fit_transform(all_embeddings)
-
-    # Plot
-    plt.figure(figsize=(10, 8))
-    for ensemble_id in set(ensemble_labels):
-        mask = np.array(ensemble_labels) == ensemble_id
-        plt.scatter(embeddings_2d[mask, 0], embeddings_2d[mask, 1], label=f'Ensemble {ensemble_id}')
-
-    plt.title(f'PCA of Embeddings - Epoch {epoch}')
-    plt.xlabel('First Principal Component')
-    plt.ylabel('Second Principal Component')
-    plt.legend()
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
     
-    # Save the plot
-    plt.savefig(f'{OUTPUT_PATH}/pca_visualizations/embeddings_pca_epoch_{epoch}.png')
-    plt.close()
+def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
+    """
+    Get the specified learning rate scheduler.
 
-def get_scheduler(scheduler_type, optimizer, epochs_per_sample, steps_per_epoch):
+    Args:
+        scheduler_type (str): Type of scheduler to use.
+        optimizer (torch.optim.Optimizer): The optimizer to schedule.
+        num_epochs (int): Total number of epochs for training.
+        steps_per_epoch (int): Number of steps (batches) per epoch.
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: The learning rate scheduler.
+    """
     if scheduler_type == 'cosine':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 
-            T_max=epochs_per_sample * steps_per_epoch
-        )
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs * steps_per_epoch)
     elif scheduler_type == 'plateau':
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=SCHEDULER_GAMMA, 
-            patience=SCHEDULER_PATIENCE, verbose=True
-        )
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
-        return torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=SCHEDULER_STEP_SIZE, gamma=SCHEDULER_GAMMA
-        )
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     elif scheduler_type == 'onecycle':
         return torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=LEARNING_RATE, 
-            epochs=epochs_per_sample, 
-            steps_per_epoch=steps_per_epoch,
-            pct_start=SCHEDULER_PCT_START
+            optimizer, max_lr=LEARNING_RATE, epochs=num_epochs, steps_per_epoch=steps_per_epoch
         )
     else:
         raise ValueError(f"Unknown scheduler type: {scheduler_type}")
 
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad_batches, embedding_type, scheduler_type, resume_from=None):
+def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
+    """
+    Calculate the average number of neighbors and unique atomic numbers in the dataset.
+
+    Args:
+        dataset (ConformerDataset): The dataset to analyze.
+        device (torch.device): The device to use for computations.
+
+    Returns:
+        tuple: (average number of neighbors, list of unique atomic numbers)
+    """
+    total_neighbors = 0
+    total_atoms = 0
+    unique_atomic_numbers = OrderedDict()
+    
+    for _ in range(len(dataset)):
+        sample = dataset.get_next_sample()
+        if sample is None:
+            break
+        
+        for atomic_data_list, _ in sample:
+            for conformer in atomic_data_list:
+                conformer = conformer.to(device)
+                total_neighbors += conformer.edge_index.shape[1]
+                total_atoms += conformer.positions.shape[0]
+                for atomic_number in conformer.atomic_numbers.cpu().tolist():
+                    unique_atomic_numbers[atomic_number] = None
+
+    avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
+    return avg_neighbors, list(unique_atomic_numbers.keys())
+
+def process_sample(model, sample, device, embedding_type):
+    """
+    Process a sample of molecules through the model and combine their embeddings.
+
+    Args:
+        model (EQUICATPlusNonLinearReadout): The EQUICAT model.
+        sample (list): List of molecule data.
+        device (torch.device): The device to use for computations.
+        embedding_type (str): Type of embedding combination to use.
+
+    Returns:
+        list: List of tuples containing combined embeddings and molecule keys.
+    """
+    sample_embeddings = []
+    for molecule_id, (atomic_data_list, key) in enumerate(sample):
+        molecule_embeddings = [] # For each molecule, initialize a list to store embeddings of its conformers.
+        for conformer in atomic_data_list:
+            conformer = conformer.to(device)
+            input_dict = {
+                'positions': conformer.positions,
+                'atomic_numbers': conformer.atomic_numbers,
+                'edge_index': conformer.edge_index
+            }
+            output = model(input_dict)
+            molecule_embeddings.append(output)
+        
+        molecule_embeddings = torch.stack(molecule_embeddings)
+        averaged_embeddings = process_molecule_conformers(molecule_embeddings, model.non_linear_readout.irreps_out)
+        
+        scalar, vector = averaged_embeddings[embedding_type]
+        
+        if scalar is not None and vector is not None:
+            combined = torch.cat([scalar.view(-1), vector.view(-1)])
+        elif scalar is not None:
+            combined = scalar.view(-1)
+        else:
+            combined = vector.view(-1)
+        
+        sample_embeddings.append((combined, key))
+
+    return sample_embeddings
+
+def compute_contrastive_loss(sample_embeddings):
+    """
+    Compute the contrastive loss for a sample of molecule embeddings.
+
+    Args:
+        sample_embeddings (list): List of tuples containing embeddings and keys.
+
+    Returns:
+        torch.Tensor: The computed contrastive loss.
+    """
+    embeddings = torch.stack([emb for emb, _ in sample_embeddings])
+    distances = torch.cdist(embeddings, embeddings)
+    mask = torch.eye(distances.shape[0], device=distances.device).bool()
+    n = distances.shape[0]
+    num_comparisons = n * (n - 1) / 2
+    loss = -torch.sum(distances[~mask]) / (2 * num_comparisons)
+    return loss
+
+def log_gradients(model):
+    """
+    Log gradient statistics for model parameters.
+
+    Args:
+        model (nn.Module): The model whose gradients are to be logged.
+    """
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.norm().item()
+            grad_mean = param.grad.mean().item()
+            grad_std = param.grad.std().item()
+            logging.info(f"Gradient stats for {name}:")
+            logging.info(f"  Norm: {grad_norm:.6f}, Mean: {grad_mean:.6f}, Std: {grad_std:.6f}")
+
+def log_all_molecule_embeddings(all_molecule_embeddings, epoch):
+    """
+    Log statistics of molecule embeddings across epochs.
+
+    Args:
+        all_molecule_embeddings (dict): Dictionary containing embeddings for each molecule across epochs.
+        epoch (int): The current epoch number.
+    """
+    logging.info(f"Averaged embeddings after epoch {epoch}:")
+    for key, embeddings in all_molecule_embeddings.items():
+        current_embedding = embeddings[-1]  # Get the latest embedding
+        emb_mean = current_embedding.mean().item()
+        emb_std = current_embedding.std().item()
+        emb_norm = current_embedding.norm().item()
+        logging.info(f"  Molecule {key}:")
+        logging.info(f"    Mean: {emb_mean:.6f}, Std: {emb_std:.6f}, Norm: {emb_norm:.6f}")
+        
+        # If there are multiple epochs, compute change from previous epoch
+        if len(embeddings) > 1:
+            prev_embedding = embeddings[-2]
+            change = (current_embedding - prev_embedding).norm().item()
+            logging.info(f"    Change from previous epoch: {change:.6f}")
+
+def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, embedding_type, scheduler_type, resume_from=None):
+    """
+    Train the EQUICAT model.
+
+    Args:
+        model_config (dict): Configuration for the EQUICAT model.
+        z_table (AtomicNumberTable): Table of atomic numbers.
+        conformer_ensemble (ConformerLibrary): Library of conformers.
+        cutoff (float): Cutoff distance for atomic interactions.
+        device (torch.device): Device to use for training.
+        embedding_type (str): Type of embedding to use.
+        scheduler_type (str): Type of learning rate scheduler to use.
+        resume_from (str, optional): Path to checkpoint to resume training from.
+
+    Returns:
+        nn.Module: The trained EQUICAT model.
+    """
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
     print(model)
     logging.info(f"Model initialized and moved to {device}")
 
     dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
-    total_samples = len(dataset)
-    print("Total samples: ", total_samples)
-    epochs_per_sample = 5
-    total_epochs = total_samples * epochs_per_sample
-    print("Total epochs: ", total_epochs)
-
-    best_loss = float('inf')
-    best_model = None
-    previous_samples_embeddings = []
-    sample_ids = []
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = get_scheduler(scheduler_type, optimizer, total_epochs, dataset.sample_size)
+    num_samples = len(dataset)
+    
+    optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, num_samples)
 
     start_epoch = 0
     if resume_from:
@@ -278,192 +345,103 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, pad
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         logging.info(f"Resuming training from epoch {start_epoch}")
 
-    for epoch in range(start_epoch, total_epochs):
-        sample_index = epoch // epochs_per_sample
-        epoch_in_sample = epoch % epochs_per_sample
+    best_loss = float('inf')
+    best_model = None
 
-        if epoch_in_sample == 0:
+    # Dictionary to store all molecule embeddings across epochs
+    all_molecule_embeddings = {}
+
+    for epoch in range(start_epoch, EPOCHS):
+        logging.info(f"Starting epoch {epoch+1}/{EPOCHS}")
+        logging.info(f"Current learning rate: {get_lr(optimizer):.6f}")
+        epoch_loss = 0.0
+        dataset.reset()  # Reset dataset at the start of each epoch
+
+        # Dictionary to store molecule embeddings for this epoch
+        epoch_embeddings = {}
+
+        for sample_idx in range(num_samples):
             sample = dataset.get_next_sample()
             if sample is None:
-                dataset.reset()
-                sample = dataset.get_next_sample()
-            
-            sample_id = random.randint(1, 1000000)
-            sample_ids.append(sample_id)
-            logging.info(f"Loaded new sample (ID: {sample_id}) with {len(sample)} ensembles")
+                break
 
-        logging.info(f"Starting epoch {epoch+1}/{total_epochs} (Sample {sample_index+1}, Epoch {epoch_in_sample+1}/{epochs_per_sample})")
+            optimizer.zero_grad()
 
-        optimizer.zero_grad()
+            with detect_anomaly():
+                sample_embeddings = process_sample(model, sample, device, embedding_type)
+                loss = compute_contrastive_loss(sample_embeddings)
 
-        with detect_anomaly():
-            all_averaged_embeddings = process_sample(model, sample, device)
+                loss.backward()
+                clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+                optimizer.step()
 
-            # Compute within-sample loss
-            current_loss = compute_contrastive_loss(all_averaged_embeddings, embedding_type, is_cross_sample=False)
-            
-            total_loss = current_loss
+            epoch_loss += loss.item()
+            logging.info(f"Epoch [{epoch+1}/{EPOCHS}], Sample [{sample_idx+1}/{num_samples}], "
+                         f"Loss: {loss.item():.6f}, LR: {get_lr(optimizer):.6f}")
 
-            # Compute cross-sample loss with previous samples
-            if previous_samples_embeddings:
-                combined_embeddings = {**all_averaged_embeddings}
-                for i, prev_emb in enumerate(previous_samples_embeddings):
-                    combined_embeddings.update({f"prev_{i}_{k}": v for k, v in prev_emb.items()})
-                
-                cross_sample_loss = compute_contrastive_loss(combined_embeddings, embedding_type, is_cross_sample=True)
-                total_loss += cross_sample_loss
-                logging.info(f"Total loss (within-sample + cross-sample): {total_loss.item()}")
-            else:
-                logging.info(f"Total loss (within-sample only): {total_loss.item()}")
+            # Log gradients after each sample
+            log_gradients(model)
 
-            total_loss.backward()
+            # Store embeddings for each molecule in this sample
+            for embedding, key in sample_embeddings:
+                if key not in epoch_embeddings:
+                    epoch_embeddings[key] = []
+                epoch_embeddings[key].append(embedding.detach().cpu())
 
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRADIENT_CLIP_VALUE)
+        avg_epoch_loss = epoch_loss / num_samples
+        logging.info(f"Epoch [{epoch+1}/{EPOCHS}], Average Loss: {avg_epoch_loss:.6f}, "
+                     f"Final LR: {get_lr(optimizer):.6f}")
 
-            # Update model parameters
-            optimizer.step()
+        # Compute average embeddings for each molecule in this epoch
+        for key, embeddings in epoch_embeddings.items():
+            avg_embedding = torch.stack(embeddings).mean(dim=0)
+            if key not in all_molecule_embeddings:
+                all_molecule_embeddings[key] = []
+            all_molecule_embeddings[key].append(avg_embedding)
+
+        # Log embeddings summary for all molecules after each epoch
+        log_all_molecule_embeddings(all_molecule_embeddings, epoch+1)
+
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(avg_epoch_loss)
+        else:
             scheduler.step()
 
-        # Log gradients
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                logging.info(f"Gradient stats for {name}: mean={param.grad.mean().item():.6f}, std={param.grad.std().item():.6f}, max={param.grad.max().item():.6f}, min={param.grad.min().item():.6f}")
-            else:
-                logging.info(f"No gradient for parameter: {name}")
-
-        logging.info(f"Epoch {epoch+1}, Total Loss: {total_loss.item():.6f}, LR: {scheduler.get_last_lr()[0]:.6f}")
-
-        # Update best model if needed
-        if total_loss.item() < best_loss:
-            best_loss = total_loss.item()
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
             best_model = model.state_dict()
 
-        # Checkpointing
         if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
-            checkpoint_path = f'{OUTPUT_PATH}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'loss': total_loss.item(),
-            }, checkpoint_path)
-            logging.info(f"Checkpoint saved to {checkpoint_path}")
-
-        # Update previous samples embeddings
-        if epoch_in_sample == epochs_per_sample - 1:
-            previous_samples_embeddings.append({k: {method: (s.detach() if s is not None else None, 
-                                                             v.detach() if v is not None else None) 
-                                                    for method, (s, v) in emb.items()}
-                                                for k, emb in all_averaged_embeddings.items()})
-            if len(previous_samples_embeddings) > MAX_PREVIOUS_SAMPLES:
-                previous_samples_embeddings.pop(0)
+            save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH)
 
     logging.info("Training completed")
-    logging.info(f"Samples processed in order: {sample_ids}")
-    
-    # Load the best model
     model.load_state_dict(best_model)
-    
-    return model
+    return model            
 
-def process_sample(model, sample, device):
-    all_averaged_embeddings = {}
-    for ensemble_id, (atomic_data_list, key) in enumerate(sample):
-        batch_embeddings = []
-        for i in range(0, len(atomic_data_list), BATCH_SIZE):
-            batch_conformers = atomic_data_list[i:i+BATCH_SIZE]
-            batch_conformers = [conformer.to(device) for conformer in batch_conformers]
-
-            embeddings = []
-            for conformer in batch_conformers:
-                input_dict = {
-                    'positions': conformer.positions.clone(),
-                    'atomic_numbers': conformer.atomic_numbers.clone(),
-                    'edge_index': conformer.edge_index.clone()
-                }
-                output = model(input_dict)
-                embeddings.append(output)
-
-            embeddings = torch.stack(embeddings)
-            batch_embeddings.append(embeddings)
-
-        ensemble_result = process_ensemble_batches(batch_embeddings, model.non_linear_readout.irreps_out)
-        all_averaged_embeddings[key] = ensemble_result
-
-    logging.info(f"Processed sample with {len(all_averaged_embeddings)} ensembles")
-    logging.info(f"Averaged embeddings: {all_averaged_embeddings}")
-
-    return all_averaged_embeddings
-
-def compute_contrastive_loss(all_averaged_embeddings, embedding_type, is_cross_sample=False):
+def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path):
     """
-    Compute contrastive loss across all averaged embeddings.
-    
+    Save a checkpoint of the model's state.
+
     Args:
-        all_averaged_embeddings (dict): Dictionary of averaged embeddings for each molecule/ensemble.
-        embedding_type (str): Type of embedding to use for loss computation.
-        is_cross_sample (bool): Whether this is a cross-sample computation.
-    
-    Returns:
-        torch.Tensor: Computed contrastive loss
+        epoch (int): Current epoch number.
+        model (nn.Module): The model to save.
+        optimizer (torch.optim.Optimizer): The optimizer to save.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): The scheduler to save.
+        loss (float): Current loss value.
+        output_path (str): Directory to save the checkpoint.
     """
-    embeddings = []
-    keys = list(all_averaged_embeddings.keys())
-
-    for key in keys:
-        if embedding_type == 'all':
-            combined = []
-            for method, (scalar, vector) in all_averaged_embeddings[key].items():
-                if scalar is not None:
-                    combined.append(scalar.view(-1))
-                if vector is not None:
-                    combined.append(vector.view(-1))
-            embeddings.append(torch.cat(combined))
-        else:
-            scalar, vector = all_averaged_embeddings[key][embedding_type]
-            combined = []
-            if scalar is not None:
-                combined.append(scalar.view(-1))
-            if vector is not None:
-                combined.append(vector.view(-1))
-            embeddings.append(torch.cat(combined))
-
-    embeddings = torch.stack(embeddings)
-    
-    # Check for NaN values
-    if torch.isnan(embeddings).any():
-        logging.warning("NaN values detected in embeddings. Returning zero loss.")
-        return torch.tensor(0.0, device=embeddings.device)
-
-    # Compute pairwise distances
-    distances = torch.cdist(embeddings, embeddings)
-    
-    # Create a mask to exclude self-comparisons
-    mask = torch.eye(distances.shape[0], device=distances.device).bool()
-    
-    # Compute the number of comparisons
-    n = distances.shape[0]
-    num_comparisons = n * (n - 1) / 2
-    
-    # Compute contrastive loss
-    # We want to maximize the distances between different embeddings
-    loss = -torch.sum(distances[~mask]) / (2 * num_comparisons)
-
-    loss_type = "Cross-sample" if is_cross_sample else "Within-sample"
-    logging.info(f"{loss_type} contrastive loss computation:")
-    logging.info(f"  Number of ensemble embeddings: {len(embeddings)}")
-    logging.info(f"  Average pairwise distance: {distances[~mask].mean().item()}")
-    logging.info(f"  Max pairwise distance: {distances[~mask].max().item()}")
-    logging.info(f"  Min pairwise distance: {distances[~mask].min().item()}")
-    logging.info(f"  Contrastive loss: {loss.item()}")
-     
-    return loss
+    checkpoint_path = f'{output_path}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
+    torch.save({
+        'epoch': epoch + 1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': loss,
+    }, checkpoint_path)
+    logging.info(f"Checkpoint saved to {checkpoint_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EQUICAT Model Training")
-    parser.add_argument('--pad_batches', action='store_true', help='Enable batch padding')
     parser.add_argument('--embedding_type', type=str, default='improved_self_attention',
                         choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
                         help='Type of embedding to use for loss computation')
@@ -480,27 +458,18 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
-    logging.info(f"Padding batches: {args.pad_batches}")
     logging.info(f"Embedding type: {args.embedding_type}")
     logging.info(f"Learning rate scheduler: {args.scheduler}")
 
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
 
-    #* temp_dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES)
     dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
-
-    logging.info(f"Temporary dataset created with {len(dataset.keys)} ensembles and sample size {dataset.sample_size}") #! temp_dataset
     
-    avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device) #! temp_dataset
-
-    # avg_neighbors, unique_atomic_numbers, ensemble_avg_neighbors = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device)
+    avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device)
     np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
-    logging.info("Initializing model configuration...")
-    logging.info(f"Unique atomic numbers in dataset: {unique_atomic_numbers}")
-    logging.info(f"Average number of neighbors across dataset: {avg_num_neighbors}")
-    logging.info(f"Initialized dataset with {NUM_ENSEMBLES} conformer ensembles")
-    logging.info("Model initialization complete. Starting training...")
+    logging.info(f"Average number of neighbors: {avg_num_neighbors}")
+    logging.info(f"Unique atomic numbers: {unique_atomic_numbers}")
 
     z_table = tools.AtomicNumberTable(unique_atomic_numbers)
 
@@ -522,7 +491,7 @@ if __name__ == "__main__":
     }
     logging.info(f"Model configuration: {model_config}")
 
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.pad_batches, args.embedding_type, args.scheduler, args.resume_from_checkpoint)
+    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.embedding_type, args.scheduler, args.resume_from_checkpoint)
 
     torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
     logging.info("Model training completed and saved.")
