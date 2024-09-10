@@ -3,28 +3,28 @@ Conformer Data Loader and Processor for EQUICAT
 
 This module provides comprehensive functionality for loading and processing conformer data
 for use with the EQUICAT model. It includes a custom dataset class, data loading utilities, 
-and efficient processing functions, now with GPU support and optional conformer padding.
+and efficient processing functions, with support for GPU acceleration and optional conformer padding.
 
 Key components:
-1. ConformerDataset: A custom PyTorch dataset class for handling conformer ensembles.
-2. compute_avg_num_neighbors: Utility function to calculate average neighbors in a batch.
-3. custom_collate: Custom collation function for batching data.
-4. process_data: Generator function for processing conformer data in batches with optional padding.
-5. pad_batch: Function to pad batches to a consistent size using random sampling when enabled.
+1. ConformerDataset: A custom class for handling conformer ensembles, now with sample-based processing.
+2. select_diverse_conformers: Function to select diverse conformers using K-means clustering.
+3. compute_avg_num_neighbors: Utility function to calculate average neighbors in a batch.
+4. custom_collate: Custom collation function for batching data.
+5. process_data: Generator function for processing conformer data in batches with optional padding.
+6. pad_batch: Function to pad batches to a consistent size using random sampling when enabled.
 
 This module is optimized to work seamlessly with the MACE framework and PyTorch Geometric,
 providing efficient and scalable data handling for molecular conformer analysis on both CPU and GPU.
 
-New Feature:
-- Optional Conformer Padding: Addresses the issue of variable conformer counts in molecular ensembles.
-  When enabled and a molecule has fewer conformers than the batch size, or when the last batch of an
-  ensemble is smaller than the desired batch size, the function pads the batch by randomly
-  sampling from the available conformers. This ensures consistent batch sizes across all
-  molecules and batches when needed, which is crucial for stable training and accurate ensemble embeddings.
+New Features in v3.0:
+- Conformer Capping: Limits the number of conformers per molecule to a maximum value.
+- K-means Conformer Selection: Uses K-means clustering to select diverse conformers when capping.
+- Sample-based Processing: ConformerDataset now processes molecules in samples, improving efficiency.
+- Direct Molecule Handling: The dataset now works directly with molecule data rather than individual conformers.
 
 Author: Utkarsh Sharma
-Version: 2.2.0
-Date: 08-08-2024 (MM-DD-YYYY)
+Version: 3.0.0
+Date: 09-10-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -33,17 +33,26 @@ Dependencies:
     - molli (>=0.1.0)
     - mace (custom package)
     - torch_geometric (>=2.0.0)
+    - sklearn (>=0.24.0)
 
 Usage:
     from data_loader import ConformerDataset, process_data
     
-    dataset = ConformerDataset(conformer_ensemble, cutoff)
-    for batch_data in process_data(dataset, batch_size=32, device=device, pad_batches=True):
-        # Process batch_data
+    conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
+    dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
+    
+    for sample in range(len(dataset)):
+        sample_data = dataset.get_next_sample()
+        # Process sample_data
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+    - v3.0.0: 
+        * Added conformer capping with K-means selection
+        * Implemented sample-based processing in ConformerDataset
+        * Introduced direct molecule handling
+        * Updated logging for better tracking
     - v2.2.0: Added optional conformer padding via pad_batches parameter
     - v2.1.0: Added support for processing padded conformer batches
     - v2.0.0: Added GPU support
@@ -52,8 +61,11 @@ Change Log:
     - v1.0.0: Initial release
 
 TODO:
-    - Implement weighted sampling for padding to further improve ensemble representation
-    - Add option for deterministic padding for reproducibility
+    - Implement parallel processing for large datasets
+    - Add support for custom conformer selection methods
+    - Optimize memory usage for very large molecular systems
+    - Implement caching mechanism for frequently accessed data
+    - Add unit tests for all major components
 """
 
 import torch
@@ -77,9 +89,12 @@ NUM_ENSEMBLES = 40
 SAMPLE_SIZE = 10
 BATCH_SIZE = 6
 LOG_FILE = "/Users/utkarsh/MMLI/equicat/output/data_loader.log"
-MAX_CONFORMERS = 20  # New constant for maximum number of conformers per ensemble
+MAX_CONFORMERS = 20  # Maximum number of conformers per ensemble
 
 def setup_logging():
+    """
+    Set up logging configuration for the data loader.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -122,17 +137,29 @@ def select_diverse_conformers(conformers: List[np.ndarray], max_conformers: int)
     return selected_indices
 
 class ConformerDataset:
+    """
+    A custom dataset class for handling conformer ensembles with sample-based processing.
+    """
     def __init__(self, conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE):
+        """
+        Initialize the ConformerDataset.
+
+        Args:
+            conformer_ensemble: The source conformer ensemble.
+            cutoff (float): Cutoff distance for atomic interactions.
+            num_ensembles (int): Number of ensembles to process.
+            sample_size (int): Number of molecules per sample.
+        """
         self.conformer_ensemble = conformer_ensemble
         self.cutoff = cutoff
         self.sample_size = sample_size
 
+        # Load keys from the conformer ensemble
         with self.conformer_ensemble.reading():
             self.keys = list(self.conformer_ensemble.keys())[:num_ensembles]
 
         self.total_samples = len(self.keys) // self.sample_size
         self.current_sample = 0
-        self.sampled_keys = set()
 
         # Pre-select diverse conformers for each ensemble
         self.selected_conformers = {}
@@ -143,22 +170,44 @@ class ConformerDataset:
                 selected_indices = select_diverse_conformers(coords, MAX_CONFORMERS)
                 self.selected_conformers[key] = selected_indices
 
-        logging.info(f"ConformerDataset initialized with {len(self.keys)} total ensembles, "
+        # Initialize sample assignments
+        self.sample_assignments = self._assign_samples()
+
+        logging.info(f"ConformerDataset initialized with {len(self.keys)} total molecules, "
                      f"sample size {self.sample_size}, and {self.total_samples} total samples")
+        logging.info(f"Initial ensemble keys: {', '.join(self.keys)}")
+
+    def _assign_samples(self):
+        """
+        Randomly assign molecules to samples.
+
+        Returns:
+            List[List[str]]: List of samples, each containing molecule keys.
+        """
+        keys = self.keys.copy()
+        random.shuffle(keys)
+        return [keys[i:i+self.sample_size] for i in range(0, len(keys), self.sample_size)]
 
     def get_next_sample(self):
+        """
+        Get the next sample of molecules.
+
+        Returns:
+            List[Tuple[List[Data], str]] or None: List of (atomic_data_list, key) tuples for each molecule in the sample,
+                                                  or None if all samples have been processed.
+        """
         if self.current_sample >= self.total_samples:
             return None
 
-        start_idx = self.current_sample * self.sample_size
-        end_idx = start_idx + self.sample_size
-        sample_keys = self.keys[start_idx:end_idx]
-
+        sample_keys = self.sample_assignments[self.current_sample]
         sample_data = []
+        
+        logging.info(f"Processing sample {self.current_sample + 1} with ensemble keys: {', '.join(sample_keys)}")
+
         for key in sample_keys:
             with self.conformer_ensemble.reading():
                 conformer = self.conformer_ensemble[key]
-                coords = torch.tensor(conformer.coords, dtype=torch.float64)
+                coords = torch.tensor(conformer.coords, dtype=torch.float32)
                 atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
                 z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
 
@@ -171,7 +220,7 @@ class ConformerDataset:
                     )
                     atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
                     torch_geo_data = Data(
-                        x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64),
+                        x=torch.tensor(atomic_data.node_attrs, dtype=torch.float32),
                         positions=atomic_data.positions,
                         edge_index=atomic_data.edge_index,
                         atomic_numbers=atomic_numbers,
@@ -181,14 +230,25 @@ class ConformerDataset:
                 sample_data.append((atomic_data_list, key))
 
         self.current_sample += 1
-        logging.info(f"Loaded sample {self.current_sample} with {len(sample_data)} ensembles")
+        logging.info(f"Loaded sample {self.current_sample} with {len(sample_data)} molecules")
         return sample_data
 
     def reset(self):
+        """
+        Reset the dataset, shuffling the sample assignments.
+        """
         self.current_sample = 0
-        random.shuffle(self.keys)
+        self.sample_assignments = self._assign_samples()
+        logging.info("Dataset reset. Molecules randomly reassigned to samples.")
+        logging.info(f"New sample assignments: {[', '.join(sample) for sample in self.sample_assignments]}")
 
     def __len__(self):
+        """
+        Get the number of samples in the dataset.
+
+        Returns:
+            int: Number of samples.
+        """
         return self.total_samples
 
 def custom_collate(batch):
@@ -234,12 +294,33 @@ def pad_batch(batch: List[torch.Tensor], full_ensemble: List[torch.Tensor], batc
     return batch + added_conformers, num_to_add
 
 def compute_avg_num_neighbors(batch):
+    """
+    Compute the average number of neighbors for atoms in a batch.
+
+    Args:
+        batch: A batch of conformer data.
+
+    Returns:
+        float: Average number of neighbors.
+    """
     _, receivers = batch.edge_index
     _, counts = torch.unique(receivers, return_counts=True)
     avg_num_neighbors = torch.mean(counts.float())
     return avg_num_neighbors.item()
 
 def process_data(conformer_dataset, batch_size=BATCH_SIZE, device=None, pad_batches=False):
+    """
+    Process data from the conformer dataset.
+
+    Args:
+        conformer_dataset: The ConformerDataset instance.
+        batch_size (int): Size of each batch.
+        device: The device to use for processing (CPU or GPU).
+        pad_batches (bool): Whether to pad batches to a consistent size.
+
+    Yields:
+        tuple: Processed batch data, or None to indicate end of a sample.
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -291,22 +372,35 @@ def process_data(conformer_dataset, batch_size=BATCH_SIZE, device=None, pad_batc
         yield None  # Indicate end of current sample
 
 def main():
+    """
+    Main function to demonstrate and test the ConformerDataset and data processing pipeline.
+    
+    This function performs the following steps:
+    1. Sets up logging
+    2. Loads the conformer ensemble from a specified file
+    3. Creates a ConformerDataset instance
+    4. Iterates through the dataset using the process_data generator
+    5. Logs detailed information about each batch and conformer
+    
+    The function serves as a comprehensive test of the data loading and processing pipeline,
+    providing detailed logs about the structure and content of the loaded data.
+    """
     setup_logging()
-
+    
     logging.info(f"Loading conformer ensemble from {CONFORMER_LIBRARY_PATH}")
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
-
+    
     dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
-
+    
     logging.info(f"Dataset created with {len(dataset)} total ensembles")
-
+    
     for i, data in enumerate(process_data(dataset, batch_size=BATCH_SIZE, pad_batches=False)):
         if data is None:
             logging.info("End of sample reached")
             continue
-
+        
         batch_conformers, unique_atomic_numbers, avg_num_neighbors, ensemble_id, num_added, key = data
-
+        
         logging.info(f"\nProcessing batch {i+1}")
         logging.info(f"  Ensemble ID: {ensemble_id}")
         logging.info(f"  Ensemble Key: {key}")
@@ -314,7 +408,7 @@ def main():
         logging.info(f"  Unique atomic numbers: {unique_atomic_numbers}")
         logging.info(f"  Average number of neighbors: {avg_num_neighbors:.2f}")
         logging.info(f"  Number of added conformers: {num_added}")
-
+        
         for j, conformer in enumerate(batch_conformers):
             logging.info(f"  Conformer {j+1} details:")
             logging.info(f"    Number of atoms: {conformer.num_nodes}")
@@ -322,7 +416,7 @@ def main():
             logging.info(f"    Atomic numbers: {conformer.atomic_numbers}")
             logging.info(f"    Positions shape: {conformer.positions.shape}")
             logging.info(f"    Edge index shape: {conformer.edge_index.shape}")
-
+    
     logging.info("Data processing test completed.")
 
 if __name__ == "__main__":
