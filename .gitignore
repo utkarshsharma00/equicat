@@ -1,6 +1,6 @@
 .DS_Store
 __pycache__/
 ../.DS_Store
-../output/.DS_Store
+../output/checkpoints/
 ../saved models/
 bfg.jar
