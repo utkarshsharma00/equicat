@@ -2,5 +2,7 @@
 __pycache__/
 ../.DS_Store
 ../output/checkpoints/
+../output/trained_equicat_model.pt
+../output/unique_atomic_numbers.npy
 ../saved models/
 bfg.jar
