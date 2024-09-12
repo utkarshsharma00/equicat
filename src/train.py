@@ -371,6 +371,9 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
 
     best_loss = float('inf')
     best_model = None
+    patience = 10  # Number of epochs to wait for improvement before stopping
+    patience_counter = 0
+    logging.info(f"Early stopping patience set to {patience} epochs")
 
     # Dictionary to store all molecule embeddings across epochs
     all_molecule_embeddings = {}
@@ -434,29 +437,41 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
         else:
             scheduler.step()
 
+        # Early stopping check
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             best_model = model.state_dict()
+            patience_counter = 0
+            logging.info(f"New best model found with loss: {best_loss:.6f}")
+        else:
+            patience_counter += 1
+            logging.info(f"No improvement in loss. Patience counter: {patience_counter}/{patience}")
+
+        if patience_counter >= patience:
+            logging.info(f"Early stopping triggered after {epoch+1} epochs")
+            break
 
         if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
             save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH)
 
-        # After the last epoch, compute and store the final embeddings
-        if epoch == EPOCHS - 1:
-            dataset.reset()  # Reset dataset to process all molecules one last time
-            for sample_idx in range(num_samples):
-                sample = dataset.get_next_sample()
-                if sample is None:
-                    break
-
-                sample_embeddings = process_sample(model, sample, device, embedding_type)
-                
-                # Store the final embeddings
-                for embedding, key in sample_embeddings:
-                    final_molecule_embeddings[key] = embedding.detach().cpu().numpy()
-
     logging.info("Training completed")
+    logging.info(f"Best model had a loss of {best_loss:.6f}")
     model.load_state_dict(best_model)
+
+    # Compute final embeddings using the best model
+    logging.info("Computing final embeddings using the best model")
+    model.eval()
+    dataset.reset()
+    with torch.no_grad():
+        for sample_idx in range(num_samples):
+            sample = dataset.get_next_sample()
+            if sample is None:
+                break
+            sample_embeddings = process_sample(model, sample, device, embedding_type)
+            for embedding, key in sample_embeddings:
+                final_molecule_embeddings[key] = embedding.cpu().numpy()
+    
+    logging.info(f"Computed final embeddings for {len(final_molecule_embeddings)} molecules")
 
     # Save the final molecule embeddings
     save_final_embeddings(final_molecule_embeddings, OUTPUT_PATH)
