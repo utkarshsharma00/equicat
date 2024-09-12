@@ -4,6 +4,7 @@ EQUICAT Model Training Script
 This script implements the training pipeline for the EQUICAT model, a neural network 
 designed for molecular conformer analysis. It handles multi-molecule samples, performs
 contrastive learning, and includes advanced logging and visualization features.
+After training, it saves the final embeddings for each molecule for downstream tasks.
 
 Key components:
 1. GPU acceleration with CUDA support
@@ -15,13 +16,12 @@ Key components:
 7. Learning rate scheduling with multiple options
 8. Model checkpointing for training resumption
 9. Embedding tracking and visualization across epochs
+10. Saving final molecule embeddings for downstream tasks
 
-New functionalities in v3.0:
-1. Multi-molecule sample processing: Handles batches of molecule samples
-2. Contrastive learning: Implements contrastive loss for molecule embeddings
-3. Enhanced logging: Tracks gradients and molecule embeddings across epochs
-4. Flexible embedding combination: Supports various embedding types
-5. Robust error handling: Gracefully handles single-conformer cases
+New functionalities in v3.1:
+1. Saving final molecule embeddings: After training, the script saves the final
+   embeddings for each molecule along with their keys for downstream tasks.
+2. Enhanced logging: Includes information about the saved embeddings.
 
 Training process:
 1. Loads X molecules, divided into X1, X2, X3, ... Xn samples of Y conformers each
@@ -34,10 +34,11 @@ Training process:
       - Updates model parameters
    c. Logs gradients, loss, and embeddings
    d. Adjusts learning rate based on chosen scheduler
+3. After training, saves final embeddings for each molecule
 
 Author: Utkarsh Sharma
-Version: 3.0.0
-Date: 09-10-2024 (MM-DD-YYYY)
+Version: 3.1.0
+Date: 09-11-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -56,6 +57,7 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log: 
+    - v3.1.0: Added functionality to save final molecule embeddings for downstream tasks
     - v3.0.0: Implemented multi-molecule sample processing and contrastive learning
     - v2.5.0: Added graceful handling of single-conformer batches
     - v2.4.0: Added advanced learning rate scheduling options
@@ -90,6 +92,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import argparse
 import os
+import json
 from e3nn import o3
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
@@ -108,12 +111,12 @@ CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligne
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
 # # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
 # # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 30  # Total number of molecules
-SAMPLE_SIZE = 6  # Number of molecules per sample
+NUM_ENSEMBLES = 6  # Total number of molecules
+SAMPLE_SIZE = 2  # Number of molecules per sample
 MAX_CONFORMERS = 20  # Maximum number of conformers per molecule
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
-EPOCHS = 10  # Total number of epochs
+EPOCHS = 5  # Total number of epochs
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 5
 
@@ -262,11 +265,32 @@ def compute_contrastive_loss(sample_embeddings):
     Returns:
         torch.Tensor: The computed contrastive loss.
     """
-    embeddings = torch.stack([emb for emb, _ in sample_embeddings])
-    distances = torch.cdist(embeddings, embeddings)
+    embeddings = []
+    keys = []
+    for emb, key in sample_embeddings:
+        embeddings.append(emb)
+        keys.append(key)
+    
+    embeddings = torch.stack(embeddings)
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+
+    print("Embeddings shape: ", embeddings.shape)
+    print("Molecules in this sample:")
+    for i, (key, embedding) in enumerate(zip(keys, embeddings)):
+        print(f"Molecule {i+1} (Key: {key}):")
+        print(f"  Embedding: {embedding}")
+        print(f"  Mean: {embedding.mean().item():.4f}")
+        print(f"  Std: {embedding.std().item():.4f}")
+        print(f"  Min: {embedding.min().item():.4f}")
+        print(f"  Max: {embedding.max().item():.4f}")
+
+    epsilon = 1e-8
+    distances = torch.cdist(embeddings, embeddings) + epsilon
+
     mask = torch.eye(distances.shape[0], device=distances.device).bool()
     n = distances.shape[0]
     num_comparisons = n * (n - 1) / 2
+
     loss = -torch.sum(distances[~mask]) / (2 * num_comparisons)
     return loss
 
@@ -310,7 +334,7 @@ def log_all_molecule_embeddings(all_molecule_embeddings, epoch):
 
 def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, embedding_type, scheduler_type, resume_from=None):
     """
-    Train the EQUICAT model.
+    Train the EQUICAT model and save final molecule embeddings.
 
     Args:
         model_config (dict): Configuration for the EQUICAT model.
@@ -350,6 +374,9 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
 
     # Dictionary to store all molecule embeddings across epochs
     all_molecule_embeddings = {}
+
+    # Dictionary to store final molecule embeddings
+    final_molecule_embeddings = {}
 
     for epoch in range(start_epoch, EPOCHS):
         logging.info(f"Starting epoch {epoch+1}/{EPOCHS}")
@@ -414,9 +441,46 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
         if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
             save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH)
 
+        # After the last epoch, compute and store the final embeddings
+        if epoch == EPOCHS - 1:
+            dataset.reset()  # Reset dataset to process all molecules one last time
+            for sample_idx in range(num_samples):
+                sample = dataset.get_next_sample()
+                if sample is None:
+                    break
+
+                sample_embeddings = process_sample(model, sample, device, embedding_type)
+                
+                # Store the final embeddings
+                for embedding, key in sample_embeddings:
+                    final_molecule_embeddings[key] = embedding.detach().cpu().numpy()
+
     logging.info("Training completed")
     model.load_state_dict(best_model)
-    return model            
+
+    # Save the final molecule embeddings
+    save_final_embeddings(final_molecule_embeddings, OUTPUT_PATH)
+
+    return model
+
+def save_final_embeddings(embeddings, output_path):
+    """
+    Save the final molecule embeddings to a file.
+
+    Args:
+        embeddings (dict): Dictionary containing molecule keys and their embeddings.
+        output_path (str): Directory to save the embeddings.
+    """
+    embeddings_file = f'{output_path}/final_molecule_embeddings.json'
+    
+    # Convert numpy arrays to lists for JSON serialization
+    serializable_embeddings = {key: emb.tolist() for key, emb in embeddings.items()}
+    
+    with open(embeddings_file, 'w') as f:
+        json.dump(serializable_embeddings, f)
+    
+    logging.info(f"Final molecule embeddings saved to {embeddings_file}")
+    logging.info(f"Number of molecules with saved embeddings: {len(embeddings)}")       
 
 def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path):
     """
