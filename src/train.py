@@ -109,16 +109,17 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingL
 # Constants
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-# # CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
-# # OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 6  # Total number of molecules
-SAMPLE_SIZE = 2  # Number of molecules per sample
+# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
+# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
+NUM_ENSEMBLES = 50  # Total number of molecules
+SAMPLE_SIZE = 10  # Number of molecules per sample
 MAX_CONFORMERS = 20  # Maximum number of conformers per molecule
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
 EPOCHS = 5  # Total number of epochs
 GRADIENT_CLIP_VALUE = 1.0
-CHECKPOINT_INTERVAL = 5
+CHECKPOINT_INTERVAL = 10
+EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
@@ -170,7 +171,7 @@ def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
         torch.optim.lr_scheduler._LRScheduler: The learning rate scheduler.
     """
     if scheduler_type == 'cosine':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs * steps_per_epoch)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max= 25 * steps_per_epoch)
     elif scheduler_type == 'plateau':
         return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
@@ -353,11 +354,14 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
     print(model)
     logging.info(f"Model initialized and moved to {device}")
 
-    dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
-    num_samples = len(dataset)
+    dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, 
+                               sample_size=SAMPLE_SIZE, exclude_molecules=EXCLUDED_MOLECULES)
     
+    num_samples = dataset.total_samples
+    steps_per_epoch = num_samples // SAMPLE_SIZE + (1 if num_samples % SAMPLE_SIZE != 0 else 0)
+
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, num_samples)
+    scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, steps_per_epoch)
 
     start_epoch = 0
     if resume_from:
@@ -371,7 +375,7 @@ def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, emb
 
     best_loss = float('inf')
     best_model = None
-    patience = 10  # Number of epochs to wait for improvement before stopping
+    patience = 30  # Number of epochs to wait for improvement before stopping
     patience_counter = 0
     logging.info(f"Early stopping patience set to {patience} epochs")
 
@@ -543,7 +547,8 @@ if __name__ == "__main__":
     conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
     logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
 
-    dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE)
+    dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, 
+                               sample_size=SAMPLE_SIZE, exclude_molecules=EXCLUDED_MOLECULES)    
     
     avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device)
     np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))

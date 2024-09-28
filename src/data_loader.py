@@ -89,7 +89,7 @@ NUM_ENSEMBLES = 40
 SAMPLE_SIZE = 10
 BATCH_SIZE = 6
 LOG_FILE = "/Users/utkarsh/MMLI/equicat/output/data_loader.log"
-MAX_CONFORMERS = 20  # Maximum number of conformers per ensemble
+MAX_CONFORMERS = 100  # Maximum number of conformers per ensemble
 
 def setup_logging():
     """
@@ -140,15 +140,16 @@ class ConformerDataset:
     """
     A custom dataset class for handling conformer ensembles with sample-based processing.
     """
-    def __init__(self, conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE):
+    def __init__(self, conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, sample_size=SAMPLE_SIZE, exclude_molecules=None):
         """
         Initialize the ConformerDataset.
 
         Args:
             conformer_ensemble: The source conformer ensemble.
             cutoff (float): Cutoff distance for atomic interactions.
-            num_ensembles (int): Number of ensembles to process.
+            num_ensembles (int): Total number of molecules to consider.
             sample_size (int): Number of molecules per sample.
+            exclude_molecules (list): List of molecule keys to exclude.
         """
         self.conformer_ensemble = conformer_ensemble
         self.cutoff = cutoff
@@ -157,6 +158,15 @@ class ConformerDataset:
         # Load keys from the conformer ensemble
         with self.conformer_ensemble.reading():
             self.keys = list(self.conformer_ensemble.keys())[:num_ensembles]
+
+        # Remove excluded molecules
+        if exclude_molecules:
+            self.keys = [key for key in self.keys if key not in exclude_molecules]
+
+        # Ensure the number of molecules is divisible by sample_size
+        self.num_molecules = len(self.keys)
+        self.num_samples = self.num_molecules // sample_size
+        self.keys = self.keys[:self.num_samples * sample_size]  # Truncate to make divisible
 
         self.total_samples = len(self.keys) // self.sample_size
         self.current_sample = 0
@@ -173,7 +183,7 @@ class ConformerDataset:
         # Initialize sample assignments
         self.sample_assignments = self._assign_samples()
 
-        logging.info(f"ConformerDataset initialized with {len(self.keys)} total molecules, "
+        logging.info(f"ConformerDataset initialized with {len(self.keys)} molecules, "
                      f"sample size {self.sample_size}, and {self.total_samples} total samples")
         logging.info(f"Initial ensemble keys: {', '.join(self.keys)}")
 
@@ -184,9 +194,10 @@ class ConformerDataset:
         Returns:
             List[List[str]]: List of samples, each containing molecule keys.
         """
-        keys = self.keys.copy()
-        random.shuffle(keys)
-        return [keys[i:i+self.sample_size] for i in range(0, len(keys), self.sample_size)]
+        assignments = []
+        for i in range(0, len(self.keys), self.sample_size):
+            assignments.append(self.keys[i:i + self.sample_size])
+        return assignments
 
     def get_next_sample(self):
         """

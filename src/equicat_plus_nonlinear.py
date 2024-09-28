@@ -243,4 +243,3 @@ def move_to_device(obj, device):
         return {key: move_to_device(value, device) for key, value in obj.items()}
     else:
         return obj
-    
