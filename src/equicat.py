@@ -19,8 +19,8 @@ The EQUICAT class encapsulates the entire model, providing a forward method that
 processes input molecular data through various stages of the network.
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 09-10-2024 (MM-DD-YYYY)
+Version: 1.0.0
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -56,7 +56,7 @@ from torch_geometric.utils import to_dense_batch
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
-np.random.seed(0)
+np.random.seed(42)
 
 class EQUICAT(torch.nn.Module):
     def __init__(self, model_config, z_table):

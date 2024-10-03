@@ -21,9 +21,9 @@ New functionalities in v3.1.1:
    conformers of a single molecule.
 3. Enhanced error handling and logging throughout the module.
 
-Version: 3.1.1
-Date: 09-10-2024 (MM-DD-YYYY)
 Author: Utkarsh Sharma
+Version: 1.0.0
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -81,7 +81,7 @@ from e3nn import o3
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
-np.random.seed(0)
+np.random.seed(42)
 
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output/pca_visualizations"
 

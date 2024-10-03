@@ -11,7 +11,7 @@ Key components:
 
 Author: Utkarsh Sharma
 Version: 1.0.0
-Date: 09-11-2024 (MM-DD-YYYY)
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -37,8 +37,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # Constants
-INPUT_FILE = "/Users/utkarsh/MMLI/equicat/output/final_molecule_embeddings.json"
-OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/output/molecule_embeddings_pca.html"
+INPUT_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/final_molecule_embeddings.json"
+OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/embeddings_pca.html"
 
 def load_embeddings(file_path):
     """

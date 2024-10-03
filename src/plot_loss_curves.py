@@ -14,8 +14,8 @@ New functionality in v3.0.0:
   across epochs, providing a comprehensive view of the training progress.
 
 Author: Utkarsh Sharma
-Version: 3.0.0
-Date: 09-10-2024 (MM-DD-YYYY)
+Version: 1.0.0
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -55,9 +55,9 @@ np.set_printoptions(precision=15)
 np.random.seed(0)
 
 # Constants
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output/output/loss_curves"
-LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/output/output"
-LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/loss_curves"
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/"
+LOG_FILE = os.path.join(LOG_FILE_PATH, "data_loader.log")
 
 def plot_average_loss_and_learning_rate(log_file):
     """

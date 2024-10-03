@@ -1,189 +1,168 @@
 """
-EQUICAT Conformer Embedding Combiner Sanity Check
+conformer_averaging_sanity_check.py
 
-This script performs sanity checks on the conformer ensemble processing of the EQUICAT model:
-1. Creates dummy data for water molecule conformers
-2. Tests the processing of conformer ensembles, including optional padding
-3. Verifies various embedding combination methods
-4. Compares results between original and padded data
+This script performs sanity checks to verify if the averaging of multiple conformers
+is happening correctly in the EQUICAT model training process.
+
+It uses a small sample of the dataset and logs detailed information about
+the conformer processing and averaging steps.
 
 Author: Utkarsh Sharma
 Version: 1.0.0
-Date: 08-14-2024 (MM-DD-YYYY)
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
-
-Usage:
-    python conformer_ensemble_sanity_check.py
-
-Dependencies:
-    - torch (>=1.9.0)
-    - numpy (>=1.20.0)
-
-TODO:
-    - Implement additional embedding combination methods
-    - Add tests for edge cases (e.g., single conformer, very large ensembles)
-    - Integrate with actual EQUICAT data loading pipeline for real-data testing
-
-Change Log:
-    - v1.0.0: Initial implementation with dummy data generation and basic processing checks
 """
 
-import random
 import torch
-from equicat import ConformerEnsembleEmbeddingCombiner
+import logging
+import os
+import random
+import molli as ml
+from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
+from data_loader import MultiFamilyConformerDataset
+from train import calculate_avg_num_neighbors_and_unique_atomic_numbers
+from conformer_ensemble_embedding_combiner import process_molecule_conformers, move_to_device
+from mace import tools
 
-BATCH_SIZE = 6
+logger = logging.getLogger('sanity_check')
 
-def create_dummy_water_data(num_conformers: int, num_atoms: int = 3, scalar_dim: int = 8, vector_dim: int = 8, pad_to_batch_size: bool = False):
-    total_dim = scalar_dim + vector_dim * 3
-    dummy_data = torch.rand(num_conformers, num_atoms, total_dim)
-    
-    if pad_to_batch_size and num_conformers < BATCH_SIZE:
-        pad_size = BATCH_SIZE - num_conformers
-        padding = torch.zeros(pad_size, num_atoms, total_dim)
-        dummy_data = torch.cat([dummy_data, padding], dim=0)
-    
-    print("\nDummy Water Molecule Data (including padded conformers if applicable):")
-    for i in range(dummy_data.shape[0]):
-        print(f"\nConformer {i + 1}:")
-        for j in range(num_atoms):
-            scalar = dummy_data[i, j, :scalar_dim]
-            vector = dummy_data[i, j, scalar_dim:].view(vector_dim, 3)
-            print(f"  Atom {j + 1}:")
-            print(f"    Scalar: {scalar.tolist()}")
-            print(f"    Vector: {vector.tolist()}")
-    
-    return dummy_data
+# Constants (adjust as needed)
+CONFORMER_LIBRARY_PATHS = {
+    "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
+    "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/molnet.clib",
+}
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/"
+SAMPLE_SIZE = 2
+MAX_CONFORMERS = 2
+CUTOFF = 6.0
+NUM_FAMILIES = 2
+ENSEMBLES_PER_FAMILY = 2
 
-def process_conformer_ensemble(conformer_embeddings: torch.Tensor, pad_to_batch_size: bool = False, batch_size = BATCH_SIZE) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    print(f"process_conformer_ensemble input shape: {conformer_embeddings.shape}")
+def setup_logging(log_file):
+    logger.setLevel(logging.DEBUG)
+    file_handler = logging.FileHandler(log_file, mode='w')
+    console_handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+def get_model_config(z_table, avg_num_neighbors):
+    from mace import modules
+    from e3nn import o3
+    return {
+        "r_max": CUTOFF,
+        "num_bessel": 8,
+        "num_polynomial_cutoff": 6,
+        "max_ell": 2,
+        "num_interactions": 1,
+        "num_elements": len(z_table),
+        "interaction_cls": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
+        "interaction_cls_first": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
+        "hidden_irreps": o3.Irreps("32x0e + 32x1o"),  # Reduced size for sanity check
+        "MLP_irreps": o3.Irreps("16x0e"),
+        "atomic_energies": tools.to_numpy(torch.zeros(len(z_table), dtype=torch.float64)),
+        "correlation": 3,
+        "gate": torch.nn.functional.silu,
+        "avg_num_neighbors": avg_num_neighbors,
+    }
+
+def process_single_molecule(model, atomic_data_list, key, family, device, embedding_type):
+    logging.info(f"Processing molecule {key} from family {family}")
+    logging.info(f"Number of conformers: {len(atomic_data_list)}")
+
+    molecule_embeddings = []
+    for i, conformer in enumerate(atomic_data_list):
+        conformer = move_to_device(conformer, device)
+        input_dict = {
+            'positions': conformer.positions,
+            'atomic_numbers': conformer.atomic_numbers,
+            'edge_index': conformer.edge_index
+        }
+        output = model(input_dict)
+        molecule_embeddings.append(output)
+        logging.info(f"Conformer {i+1} embedding:")
+        logging.info(f"  Shape: {output.shape}")
+        logging.info(f"  Mean: {output.mean().item():.6f}")
+        logging.info(f"  Std: {output.std().item():.6f}")
+        logging.info(f"  Min: {output.min().item():.6f}")
+        logging.info(f"  Max: {output.max().item():.6f}")
+        logging.info(f"  First 5 values: {output[:5].tolist()}")
+
+    molecule_embeddings = torch.stack(molecule_embeddings)
+    logging.info(f"Stacked molecule embeddings shape: {molecule_embeddings.shape}")
+
+    averaged_embeddings = process_molecule_conformers(molecule_embeddings, model.non_linear_readout.irreps_out)
     
-    num_conformers, num_atoms, total_dim = conformer_embeddings.shape
-    scalar_dim = total_dim // 4
-    vector_dim = scalar_dim
+    scalar, vector = averaged_embeddings[embedding_type]
     
-    print(f"Num conformers: {num_conformers}, Num atoms: {num_atoms}, Total dim: {total_dim}")
-    print(f"Scalar dim: {scalar_dim}, Vector dim: {vector_dim}")
-    
-    if pad_to_batch_size and batch_size > num_conformers:
-        pad_size = batch_size - num_conformers
-        padding_indices = random.choices(range(num_conformers), k=pad_size)
-        padding = conformer_embeddings[padding_indices]
-        
-        print("\nPadded Conformers:")
-        for i, idx in enumerate(padding_indices):
-            print(f"\nPadded Conformer {num_conformers + i + 1} (copied from Conformer {idx + 1}):")
-            for j in range(num_atoms):
-                scalar = padding[i, j, :scalar_dim]
-                vector = padding[i, j, scalar_dim:].view(vector_dim, 3)
-                print(f"  Atom {j + 1}:")
-                print(f"    Scalar: {scalar.tolist()}")
-                print(f"    Vector: {vector.tolist()}")
-        
-        conformer_embeddings = torch.cat([conformer_embeddings, padding], dim=0)
-        print(f"\nPadded input shape: {conformer_embeddings.shape}")
-        print(f"Indices used for padding: {padding_indices}")
+    if scalar is not None and vector is not None:
+        combined = torch.cat([scalar.view(-1), vector.view(-1)])
+    elif scalar is not None:
+        combined = scalar.view(-1)
     else:
-        print("\nNo padding needed. Number of conformers matches or exceeds batch size.")
-    
-    combiner = ConformerEnsembleEmbeddingCombiner(scalar_dim, vector_dim).to(conformer_embeddings.device)
-    results = combiner(conformer_embeddings)
+        combined = vector.view(-1)
 
-    return results
+    logging.info(f"Averaged embedding:")
+    logging.info(f"  Shape: {combined.shape}")
+    logging.info(f"  Mean: {combined.mean().item():.6f}")
+    logging.info(f"  Std: {combined.std().item():.6f}")
+    logging.info(f"  Min: {combined.min().item():.6f}")
+    logging.info(f"  Max: {combined.max().item():.6f}")
+    logging.info(f"  First 5 values: {combined[:5].tolist()}")
 
-def print_means(scalar, vector):
-    scalar_mean = scalar.mean(dim=1)
-    vector_mean = vector.mean(dim=1)
-    
-    print("\nMean values:")
-    for i in range(scalar_mean.shape[0]):
-        print(f"Conformer {i + 1}:")
-        print(f"  Scalar mean: {scalar_mean[i].tolist()}")
-        print(f"  Vector mean: {vector_mean[i].tolist()}")
-
-def run_sanity_checks(conformer_embeddings: torch.Tensor):
-    print("Starting sanity checks...")
-    
-    num_conformers, num_atoms, total_dim = conformer_embeddings.shape
-    scalar_dim = total_dim // 4
-    vector_dim = scalar_dim
-
-    def print_detailed_embeddings(results, title):
-        print(f"\n{title}")
-        for method, (scalar, vector) in results.items():
-            print(f"\n{method}:")
-            for i in range(scalar.shape[0]):
-                print(f"  Conformer {i + 1}:")
-                print(f"    Scalar: {scalar[i].tolist()}")
-                print(f"    Vector: {vector[i].tolist()}")
-
-    def print_means(scalar, vector):
-        scalar_mean = scalar.mean(dim=1)
-        vector_mean = vector.mean(dim=1)
-        
-        print("\nMean values:")
-        for i in range(scalar_mean.shape[0]):
-            print(f"Conformer {i + 1}:")
-            print(f"  Scalar mean: {scalar_mean[i].tolist()}")
-            print(f"  Vector mean: {vector_mean[i].tolist()}")
-
-    print("\nRunning sanity checks with original data:")
-    results_original = process_conformer_ensemble(conformer_embeddings)
-    print_detailed_embeddings(results_original, "Original Data Embeddings")
-
-    # print("\nMean calculations for original data:")
-    # scalar = conformer_embeddings[:, :, :scalar_dim]
-    # vector = conformer_embeddings[:, :, scalar_dim:].view(num_conformers, num_atoms, vector_dim, 3)
-    # print_means(scalar, vector)
-
-    print("\nRunning sanity checks with padded data:")
-    results_padded = process_conformer_ensemble(conformer_embeddings, pad_to_batch_size=False)
-    print_detailed_embeddings(results_padded, "Padded Data Embeddings")
-
-    # print("\nMean calculations for padded data:")
-    # padded_embeddings = torch.zeros(BATCH_SIZE, num_atoms, total_dim)
-    # padded_embeddings[:num_conformers] = conformer_embeddings
-    # scalar_padded = padded_embeddings[:, :, :scalar_dim]
-    # vector_padded = padded_embeddings[:, :, scalar_dim:].view(BATCH_SIZE, num_atoms, vector_dim, 3)
-    # print_means(scalar_padded, vector_padded)
-
-    print("\nComparing original and padded results:")
-    for method in results_original.keys():
-        scalar_orig, vector_orig = results_original[method]
-        scalar_pad, vector_pad = results_padded[method]
-        
-        print(f"\n{method}:")
-        print(f"  Original scalar shape: {scalar_orig.shape}")
-        print(f"  Padded scalar shape: {scalar_pad.shape}")
-        print(f"  Original vector shape: {vector_orig.shape}")
-        print(f"  Padded vector shape: {vector_pad.shape}")
-        
-        print("  Scalar difference (first 5 elements):")
-        print(f"    {(scalar_pad[:num_conformers] - scalar_orig)[:5]}")
-        print("  Vector difference (first 5 elements):")
-        print(f"    {(vector_pad[:num_conformers] - vector_orig)[:5]}")
-
-    print("Sanity checks completed.")
+    return combined
 
 def main():
-    print("Starting main function...")
+    log_file = f"{OUTPUT_PATH}/conformer_averaging_sanity_check.log"
+    setup_logging(log_file)
+    logging.info("Starting conformer averaging sanity check")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logging.info(f"Using device: {device}")
+
+    # Create dataset
+    logging.info("Creating dataset")
+    conformer_libraries = {family: ml.ConformerLibrary(path) for family, path in CONFORMER_LIBRARY_PATHS.items()}
+    dataset = MultiFamilyConformerDataset(
+        conformer_libraries=conformer_libraries,
+        cutoff=CUTOFF,
+        sample_size=SAMPLE_SIZE,
+        max_conformers=MAX_CONFORMERS,
+        num_families=NUM_FAMILIES,
+        ensembles_per_family=ENSEMBLES_PER_FAMILY
+    )
+    logging.info("Dataset created successfully")
+
+    # Calculate average neighbors and unique atomic numbers
+    logging.info("Calculating average neighbors and unique atomic numbers")
+    avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device)
+    logging.info(f"Average number of neighbors: {avg_num_neighbors}")
+    logging.info(f"Unique atomic numbers: {unique_atomic_numbers}")
+
+    z_table = tools.AtomicNumberTable(unique_atomic_numbers)
+
+    # Create model
+    logging.info("Creating model")
+    model_config = get_model_config(z_table, avg_num_neighbors)
+    model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
+    logging.info("Model created successfully")
+
+    # Process a small sample
+    logging.info("Processing a small sample of molecules")
+    embedding_type = 'mean_pooling'
     
-    # Create dummy data for water molecules
-    num_conformers = 4
-    num_atoms = 3
-    scalar_dim = 2
-    vector_dim = 2
-    dummy_data = create_dummy_water_data(num_conformers, num_atoms, scalar_dim, vector_dim)
+    for sample_idx, sample in enumerate(dataset):
+        logging.info(f"Processing sample {sample_idx + 1}")
+        for atomic_data_list, key, family in sample:
+            combined_embedding = process_single_molecule(model, atomic_data_list, key, family, device, embedding_type)
+            logging.info(f"Processed molecule {key} from family {family}")
+        
+        if sample_idx >= 1:  # Process only 2 samples for this sanity check
+            break
 
-    print(f"\nCreated dummy data for {num_conformers} water molecule conformers")
-    print(f"Dummy data shape: {dummy_data.shape}")
-
-    # Run sanity checks
-    results = process_conformer_ensemble(dummy_data, pad_to_batch_size=False, batch_size=BATCH_SIZE)
-    run_sanity_checks(dummy_data)
-
-    print("\nSanity checks completed.")
+    logging.info("Conformer averaging sanity check completed")
 
 if __name__ == "__main__":
     main()
-    

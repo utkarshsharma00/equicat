@@ -1,209 +1,87 @@
 """
-EQUICAT Model Training Script
-
-This script implements the training pipeline for the EQUICAT model, a neural network 
-designed for molecular conformer analysis. It handles multi-molecule samples, performs
-contrastive learning, and includes advanced logging and visualization features.
-After training, it saves the final embeddings for each molecule for downstream tasks.
-
-Key components:
-1. GPU acceleration with CUDA support
-2. Customizable logging setup with detailed gradient and loss tracking
-3. Dynamic calculation of average neighbors and unique atomic numbers
-4. Contrastive loss calculation for multi-molecule samples
-5. Gradient clipping and comprehensive logging during training
-6. Configurable model parameters and training hyperparameters
-7. Learning rate scheduling with multiple options
-8. Model checkpointing for training resumption
-9. Embedding tracking and visualization across epochs
-10. Saving final molecule embeddings for downstream tasks
-
-New functionalities in v3.1:
-1. Saving final molecule embeddings: After training, the script saves the final
-   embeddings for each molecule along with their keys for downstream tasks.
-2. Enhanced logging: Includes information about the saved embeddings.
-
-Training process:
-1. Loads X molecules, divided into X1, X2, X3, ... Xn samples of Y conformers each
-2. For each epoch:
-   a. Processes all X1, X2, X3, ... Xn samples sequentially
-   b. For each sample:
-      - Performs forward pass for all molecules in the sample
-      - Calculates contrastive loss for the sample
-      - Performs backward propagation
-      - Updates model parameters
-   c. Logs gradients, loss, and embeddings
-   d. Adjusts learning rate based on chosen scheduler
-3. After training, saves final embeddings for each molecule
+train.py
 
 Author: Utkarsh Sharma
-Version: 3.1.0
-Date: 09-11-2024 (MM-DD-YYYY)
+Version: 1.0.0
+Date: 10-03-2024 (MM-DD-YYYY)
 License: MIT
-
-Dependencies:
-    - torch (>=1.9.0)
-    - e3nn (>=0.4.0)
-    - mace (custom package)
-    - molli (custom package) 
-    - matplotlib (>=3.3.0)
-    - sklearn (>=0.24.0)
-
-Usage:
-    python train.py [--embedding_type {mean_pooling,deep_sets,self_attention,improved_deep_sets,improved_self_attention,all}] 
-                    [--resume_from_checkpoint CHECKPOINT_PATH]
-                    [--scheduler {plateau,step,cosine,onecycle}]
-
-For detailed usage instructions, please refer to the README.md file.
-
-Change Log: 
-    - v3.1.0: Added functionality to save final molecule embeddings for downstream tasks
-    - v3.0.0: Implemented multi-molecule sample processing and contrastive learning
-    - v2.5.0: Added graceful handling of single-conformer batches
-    - v2.4.0: Added advanced learning rate scheduling options
-    - v2.3.0: Added model checkpointing and integrated contrastive loss calculation
-    - v2.2.0: Added optional conformer padding via command-line argument
-    - v2.1.0: Added support for training with padded conformer batches
-    - v2.0.0: Added GPU support with CUDA
-    - v1.4.0: Added robust error handling, gradient clipping, and NaN detection
-    - v1.3.0: Implemented early stopping
-    - v1.2.0: Added total runtime measurement and made constants global
-    - v1.1.0: Added gradient checking and improved logging
-    - v1.0.0: Initial implementation of EQUICAT training pipeline
-
-TODO:
-    - Implement distributed training for multi-GPU setups
-    - Add support for dynamic sample sizes and ensemble counts
-    - Implement more advanced contrastive learning techniques
-    - Enhance visualization with interactive embedding plots
-    - Optimize memory usage for processing larger molecule sets
-    - Implement adaptive learning rate techniques
-    - Add support for transfer learning from pre-trained models
 """
-
 import torch
 import torch.nn.functional as F
-import molli as ml
 import logging
 import sys
 import numpy as np
 import time
-import torch.nn as nn
-import matplotlib.pyplot as plt
 import argparse
 import os
 import json
 from e3nn import o3
+import molli as ml
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
-from torch.autograd import detect_anomaly
 from mace import data, modules, tools
 from mace.tools import to_numpy
 from collections import OrderedDict
-from sklearn.decomposition import PCA
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
-from data_loader import ConformerDataset
-from conformer_ensemble_embedding_combiner import process_molecule_conformers
+from data_loader import MultiFamilyConformerDataset
+from conformer_ensemble_embedding_combiner import process_molecule_conformers, move_to_device
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR
-
-# Constants
-CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/output"
-# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
-# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/output"
-NUM_ENSEMBLES = 806  # Total number of molecules
-SAMPLE_SIZE = 10  # Number of molecules per sample
-MAX_CONFORMERS = 5  # Maximum number of conformers per molecule
-CUTOFF = 6.0
-LEARNING_RATE = 1e-3
-EPOCHS = 100  # Total number of epochs
-GRADIENT_CLIP_VALUE = 1.0
-CHECKPOINT_INTERVAL = 10
-EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
-np.random.seed(0)
+np.random.seed(42)
+
+logger = logging.getLogger('train')
+
+# Constants
+CONFORMER_LIBRARY_PATHS = {
+    "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
+    "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/molnet.clib",
+}
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/"
+SAMPLE_SIZE = 10
+MAX_CONFORMERS = 5
+CUTOFF = 6.0
+LEARNING_RATE = 1e-3
+EPOCHS = 25
+GRADIENT_CLIP_VALUE = 1.0
+CHECKPOINT_INTERVAL = 5
+EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
 
 def setup_logging(log_file):
-    """
-    Set up logging configuration for the training process.
-
-    Args:
-        log_file (str): Path to the log file.
-    """
-    with open(log_file, 'w') as f:
-        f.write("")
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, mode='w'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    logger.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(log_file, mode='w')
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
 def get_lr(optimizer):
-    """
-    Get the current learning rate from the optimizer.
-
-    Args:
-        optimizer (torch.optim.Optimizer): The optimizer object.
-
-    Returns:
-        float: The current learning rate.
-    """
     for param_group in optimizer.param_groups:
         return param_group['lr']
-    
+
 def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
-    """
-    Get the specified learning rate scheduler.
-
-    Args:
-        scheduler_type (str): Type of scheduler to use.
-        optimizer (torch.optim.Optimizer): The optimizer to schedule.
-        num_epochs (int): Total number of epochs for training.
-        steps_per_epoch (int): Number of steps (batches) per epoch.
-
-    Returns:
-        torch.optim.lr_scheduler._LRScheduler: The learning rate scheduler.
-    """
     if scheduler_type == 'cosine':
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max= 25 * steps_per_epoch)
+        return CosineAnnealingLR(optimizer, T_max=25 * steps_per_epoch)
     elif scheduler_type == 'plateau':
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
+        return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
-        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        return StepLR(optimizer, step_size=5, gamma=0.1)
     elif scheduler_type == 'onecycle':
-        return torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=LEARNING_RATE, epochs=num_epochs, steps_per_epoch=steps_per_epoch
-        )
+        return OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=num_epochs, steps_per_epoch=steps_per_epoch)
     else:
         raise ValueError(f"Unknown scheduler type: {scheduler_type}")
 
 def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
-    """
-    Calculate the average number of neighbors and unique atomic numbers in the dataset.
-
-    Args:
-        dataset (ConformerDataset): The dataset to analyze.
-        device (torch.device): The device to use for computations.
-
-    Returns:
-        tuple: (average number of neighbors, list of unique atomic numbers)
-    """
+    logger.info("Calculating average neighbors and unique atomic numbers")
     total_neighbors = 0
     total_atoms = 0
     unique_atomic_numbers = OrderedDict()
     
-    for _ in range(len(dataset)):
-        sample = dataset.get_next_sample()
-        if sample is None:
-            break
-        
-        for atomic_data_list, _ in sample:
+    for sample in dataset:
+        for atomic_data_list, _, _ in sample:
             for conformer in atomic_data_list:
                 conformer = conformer.to(device)
                 total_neighbors += conformer.edge_index.shape[1]
@@ -212,26 +90,15 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
                     unique_atomic_numbers[atomic_number] = None
 
     avg_neighbors = total_neighbors / total_atoms if total_atoms > 0 else 0
+    logger.info(f"Calculation complete. Average neighbors: {avg_neighbors}")
     return avg_neighbors, list(unique_atomic_numbers.keys())
 
 def process_sample(model, sample, device, embedding_type):
-    """
-    Process a sample of molecules through the model and combine their embeddings.
-
-    Args:
-        model (EQUICATPlusNonLinearReadout): The EQUICAT model.
-        sample (list): List of molecule data.
-        device (torch.device): The device to use for computations.
-        embedding_type (str): Type of embedding combination to use.
-
-    Returns:
-        list: List of tuples containing combined embeddings and molecule keys.
-    """
     sample_embeddings = []
-    for molecule_id, (atomic_data_list, key) in enumerate(sample):
-        molecule_embeddings = [] # For each molecule, initialize a list to store embeddings of its conformers.
+    for atomic_data_list, key, family in sample:
+        molecule_embeddings = []
         for conformer in atomic_data_list:
-            conformer = conformer.to(device)
+            conformer = move_to_device(conformer, device)
             input_dict = {
                 'positions': conformer.positions,
                 'atomic_numbers': conformer.atomic_numbers,
@@ -252,48 +119,9 @@ def process_sample(model, sample, device, embedding_type):
         else:
             combined = vector.view(-1)
         
-        sample_embeddings.append((combined, key))
+        sample_embeddings.append((combined, key, family))
 
     return sample_embeddings
-
-def compute_contrastive_loss(sample_embeddings):
-    """
-    Compute the contrastive loss for a sample of molecule embeddings.
-
-    Args:
-        sample_embeddings (list): List of tuples containing embeddings and keys.
-
-    Returns:
-        torch.Tensor: The computed contrastive loss.
-    """
-    embeddings = []
-    keys = []
-    for emb, key in sample_embeddings:
-        embeddings.append(emb)
-        keys.append(key)
-    
-    embeddings = torch.stack(embeddings)
-    embeddings = F.normalize(embeddings, p=2, dim=1)
-
-    print("Embeddings shape: ", embeddings.shape)
-    print("Molecules in this sample:")
-    for i, (key, embedding) in enumerate(zip(keys, embeddings)):
-        print(f"Molecule {i+1} (Key: {key}):")
-        print(f"  Embedding: {embedding}")
-        print(f"  Mean: {embedding.mean().item():.4f}")
-        print(f"  Std: {embedding.std().item():.4f}")
-        print(f"  Min: {embedding.min().item():.4f}")
-        print(f"  Max: {embedding.max().item():.4f}")
-
-    epsilon = 1e-8
-    distances = torch.cdist(embeddings, embeddings) + epsilon
-
-    mask = torch.eye(distances.shape[0], device=distances.device).bool()
-    n = distances.shape[0]
-    num_comparisons = n * (n - 1) / 2
-
-    loss = -torch.sum(distances[~mask]) / (2 * num_comparisons)
-    return loss
 
 def log_gradients(model):
     """
@@ -307,212 +135,163 @@ def log_gradients(model):
             grad_norm = param.grad.norm().item()
             grad_mean = param.grad.mean().item()
             grad_std = param.grad.std().item()
-            logging.info(f"Gradient stats for {name}:")
-            logging.info(f"  Norm: {grad_norm:.6f}, Mean: {grad_mean:.6f}, Std: {grad_std:.6f}")
+            logger.info(f"Gradient stats for {name}:")
+            logger.info(f"  Norm: {grad_norm:.6f}, Mean: {grad_mean:.6f}, Std: {grad_std:.6f}")
 
-def log_all_molecule_embeddings(all_molecule_embeddings, epoch):
-    """
-    Log statistics of molecule embeddings across epochs.
-
-    Args:
-        all_molecule_embeddings (dict): Dictionary containing embeddings for each molecule across epochs.
-        epoch (int): The current epoch number.
-    """
-    logging.info(f"Averaged embeddings after epoch {epoch}:")
-    for key, embeddings in all_molecule_embeddings.items():
-        current_embedding = embeddings[-1]  # Get the latest embedding
-        emb_mean = current_embedding.mean().item()
-        emb_std = current_embedding.std().item()
-        emb_norm = current_embedding.norm().item()
-        logging.info(f"  Molecule {key}:")
-        logging.info(f"    Mean: {emb_mean:.6f}, Std: {emb_std:.6f}, Norm: {emb_norm:.6f}")
-        
-        # If there are multiple epochs, compute change from previous epoch
-        if len(embeddings) > 1:
-            prev_embedding = embeddings[-2]
-            change = (current_embedding - prev_embedding).norm().item()
-            logging.info(f"    Change from previous epoch: {change:.6f}")
-
-def train_equicat(model_config, z_table, conformer_ensemble, cutoff, device, embedding_type, scheduler_type, resume_from=None):
-    """
-    Train the EQUICAT model and save final molecule embeddings.
-
-    Args:
-        model_config (dict): Configuration for the EQUICAT model.
-        z_table (AtomicNumberTable): Table of atomic numbers.
-        conformer_ensemble (ConformerLibrary): Library of conformers.
-        cutoff (float): Cutoff distance for atomic interactions.
-        device (torch.device): Device to use for training.
-        embedding_type (str): Type of embedding to use.
-        scheduler_type (str): Type of learning rate scheduler to use.
-        resume_from (str, optional): Path to checkpoint to resume training from.
-
-    Returns:
-        nn.Module: The trained EQUICAT model.
-    """
-    model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
-    print(model)
-    logging.info(f"Model initialized and moved to {device}")
-
-    dataset = ConformerDataset(conformer_ensemble, cutoff, num_ensembles=NUM_ENSEMBLES, 
-                               sample_size=SAMPLE_SIZE, exclude_molecules=EXCLUDED_MOLECULES)
+def compute_contrastive_loss(sample_embeddings, temperature=0.1):
+    embeddings = []
+    families = []
+    for emb, _, family in sample_embeddings:
+        embeddings.append(emb)
+        families.append(family)
     
-    num_samples = dataset.total_samples
-    steps_per_epoch = num_samples // SAMPLE_SIZE + (1 if num_samples % SAMPLE_SIZE != 0 else 0)
+    if len(embeddings) < 2:
+        logging.warning(f"Not enough embeddings to compute contrastive loss. Only {len(embeddings)} embeddings available.")
+        return torch.tensor(0.0, requires_grad=True)  # Return a dummy loss
+
+    embeddings = torch.stack(embeddings)
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+
+    similarity_matrix = torch.matmul(embeddings, embeddings.T) / temperature
+    
+    labels = torch.tensor([families.index(f) for f in families], device=embeddings.device)
+    
+    # Create mask for positive pairs
+    pos_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+    
+    # We don't want to consider the similarity of a sample with itself as a positive pair
+    pos_mask.fill_diagonal_(0)
+    
+    # Negative mask is just the inverse of the positive mask
+    neg_mask = 1 - pos_mask
+    
+    # Compute loss
+    exp_sim = torch.exp(similarity_matrix)
+    
+    # Compute positive and negative scores
+    pos_scores = torch.sum(exp_sim * pos_mask, dim=1)
+    neg_scores = torch.sum(exp_sim * neg_mask, dim=1)
+    
+    # Compute loss
+    loss = -torch.log(pos_scores / (pos_scores + neg_scores))
+    
+    return loss.mean()
+
+def train_equicat(model, dataset, device, embedding_type, scheduler_type, args):
+    logger.info("Starting train_equicat function")
+    
+    num_samples = len(dataset)
+    steps_per_epoch = num_samples
+    logger.info(f"Number of samples: {num_samples}, Steps per epoch: {steps_per_epoch}")
 
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, steps_per_epoch)
-
-    start_epoch = 0
-    if resume_from:
-        checkpoint = torch.load(resume_from, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch']
-        if 'scheduler_state_dict' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        logging.info(f"Resuming training from epoch {start_epoch}")
+    logger.info("Optimizer and scheduler initialized")
 
     best_loss = float('inf')
     best_model = None
-    patience = 30  # Number of epochs to wait for improvement before stopping
+    patience = 30
     patience_counter = 0
-    logging.info(f"Early stopping patience set to {patience} epochs")
+    logger.info(f"Early stopping patience set to {patience} epochs")
 
-    # Dictionary to store all molecule embeddings across epochs
     all_molecule_embeddings = {}
-
-    # Dictionary to store final molecule embeddings
     final_molecule_embeddings = {}
 
-    for epoch in range(start_epoch, EPOCHS):
-        logging.info(f"Starting epoch {epoch+1}/{EPOCHS}")
-        logging.info(f"Current learning rate: {get_lr(optimizer):.6f}")
+    for epoch in range(EPOCHS):
+        logger.info(f"Starting epoch {epoch+1}/{EPOCHS}")
+        model.train()
         epoch_loss = 0.0
-        dataset.reset()  # Reset dataset at the start of each epoch
+        dataset.reset()
 
-        # Dictionary to store molecule embeddings for this epoch
         epoch_embeddings = {}
 
-        for sample_idx in range(num_samples):
-            sample = dataset.get_next_sample()
-            if sample is None:
-                break
-
+        for sample_idx, sample in enumerate(dataset):
+            logger.info(f"Processing sample {sample_idx+1}/{num_samples}")
             optimizer.zero_grad()
 
-            with detect_anomaly():
-                sample_embeddings = process_sample(model, sample, device, embedding_type)
-                loss = compute_contrastive_loss(sample_embeddings)
+            sample_embeddings = process_sample(model, sample, device, embedding_type)
+            loss = compute_contrastive_loss(sample_embeddings)
 
-                loss.backward()
-                clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
-                optimizer.step()
+            loss.backward()
+            clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
+            optimizer.step()
 
             epoch_loss += loss.item()
-            logging.info(f"Epoch [{epoch+1}/{EPOCHS}], Sample [{sample_idx+1}/{num_samples}], "
+            logger.info(f"Epoch [{epoch+1}/{EPOCHS}], Sample [{sample_idx+1}/{num_samples}], "
                          f"Loss: {loss.item():.6f}, LR: {get_lr(optimizer):.6f}")
 
-            # Log gradients after each sample
-            log_gradients(model)
-
-            # Store embeddings for each molecule in this sample
-            for embedding, key in sample_embeddings:
+            for embedding, key, _ in sample_embeddings:
                 if key not in epoch_embeddings:
                     epoch_embeddings[key] = []
                 epoch_embeddings[key].append(embedding.detach().cpu())
 
         avg_epoch_loss = epoch_loss / num_samples
-        logging.info(f"Epoch [{epoch+1}/{EPOCHS}], Average Loss: {avg_epoch_loss:.6f}, "
+        logger.info(f"Epoch [{epoch+1}/{EPOCHS}], Average Loss: {avg_epoch_loss:.6f}, "
                      f"Final LR: {get_lr(optimizer):.6f}")
 
-        # Compute average embeddings for each molecule in this epoch
         for key, embeddings in epoch_embeddings.items():
             avg_embedding = torch.stack(embeddings).mean(dim=0)
             if key not in all_molecule_embeddings:
                 all_molecule_embeddings[key] = []
             all_molecule_embeddings[key].append(avg_embedding)
 
-        # Log embeddings summary for all molecules after each epoch
-        log_all_molecule_embeddings(all_molecule_embeddings, epoch+1)
-
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        if isinstance(scheduler, ReduceLROnPlateau):
             scheduler.step(avg_epoch_loss)
         else:
             scheduler.step()
 
-        # Early stopping check
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             best_model = model.state_dict()
             patience_counter = 0
-            logging.info(f"New best model found with loss: {best_loss:.6f}")
+            logger.info(f"New best model found with loss: {best_loss:.6f}")
         else:
             patience_counter += 1
-            logging.info(f"No improvement in loss. Patience counter: {patience_counter}/{patience}")
+            logger.info(f"No improvement in loss. Patience counter: {patience_counter}/{patience}")
 
         if patience_counter >= patience:
-            logging.info(f"Early stopping triggered after {epoch+1} epochs")
+            logger.info(f"Early stopping triggered after {epoch+1} epochs")
             break
 
         if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
             save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH)
 
-    logging.info("Training completed")
-    logging.info(f"Best model had a loss of {best_loss:.6f}")
+    logger.info("Training completed")
+    logger.info(f"Best model had a loss of {best_loss:.6f}")
+    
+    # Load the best model for final embeddings computation
     model.load_state_dict(best_model)
 
     # Compute final embeddings using the best model
-    logging.info("Computing final embeddings using the best model")
-    model.eval()
-    dataset.reset()
-    with torch.no_grad():
-        for sample_idx in range(num_samples):
-            sample = dataset.get_next_sample()
-            if sample is None:
-                break
-            sample_embeddings = process_sample(model, sample, device, embedding_type)
-            for embedding, key in sample_embeddings:
-                final_molecule_embeddings[key] = embedding.cpu().numpy()
+    logger.info("Computing final embeddings using the best model")
     
-    logging.info(f"Computed final embeddings for {len(final_molecule_embeddings)} molecules")
+    model.eval()
+    final_molecule_embeddings = {}
+    with torch.no_grad():
+        for family, keys in dataset.family_keys.items():
+            for key in keys:
+                atomic_data_list = dataset.get_molecule_data(key)
+                sample_embeddings = process_sample(model, [(atomic_data_list, key, family)], device, embedding_type)
+                embedding, _, _ = sample_embeddings[0]
+                final_molecule_embeddings[key] = embedding.cpu().numpy()
+
+    logger.info(f"Computed final embeddings for {len(final_molecule_embeddings)} molecules")
 
     # Save the final molecule embeddings
     save_final_embeddings(final_molecule_embeddings, OUTPUT_PATH)
 
-    return model
-
 def save_final_embeddings(embeddings, output_path):
-    """
-    Save the final molecule embeddings to a file.
-
-    Args:
-        embeddings (dict): Dictionary containing molecule keys and their embeddings.
-        output_path (str): Directory to save the embeddings.
-    """
     embeddings_file = f'{output_path}/final_molecule_embeddings.json'
     
-    # Convert numpy arrays to lists for JSON serialization
     serializable_embeddings = {key: emb.tolist() for key, emb in embeddings.items()}
     
     with open(embeddings_file, 'w') as f:
         json.dump(serializable_embeddings, f)
     
-    logging.info(f"Final molecule embeddings saved to {embeddings_file}")
-    logging.info(f"Number of molecules with saved embeddings: {len(embeddings)}")       
+    logger.info(f"Final molecule embeddings saved to {embeddings_file}")
+    logger.info(f"Number of molecules with saved embeddings: {len(embeddings)}")       
 
 def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path):
-    """
-    Save a checkpoint of the model's state.
-
-    Args:
-        epoch (int): Current epoch number.
-        model (nn.Module): The model to save.
-        optimizer (torch.optim.Optimizer): The optimizer to save.
-        scheduler (torch.optim.lr_scheduler._LRScheduler): The scheduler to save.
-        loss (float): Current loss value.
-        output_path (str): Directory to save the checkpoint.
-    """
     checkpoint_path = f'{output_path}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
     torch.save({
         'epoch': epoch + 1,
@@ -521,42 +300,48 @@ def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path):
         'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss,
     }, checkpoint_path)
-    logging.info(f"Checkpoint saved to {checkpoint_path}")
+    logger.info(f"Checkpoint saved to {checkpoint_path}")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="EQUICAT Model Training")
-    parser.add_argument('--embedding_type', type=str, default='improved_self_attention',
-                        choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
-                        help='Type of embedding to use for loss computation')
-    parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
-    parser.add_argument('--scheduler', type=str, default='step',
-                        choices=['plateau', 'step', 'cosine', 'onecycle'],
-                        help='Type of learning rate scheduler to use')
-    args = parser.parse_args()
-
-    start_time = time.time()
-
+def main(args):
+    logger.info("Starting main function")
+    
     setup_logging(f"{OUTPUT_PATH}/training.log")
-    logging.info("Starting EQUICAT training")
+    logger.info("Starting EQUICAT training")
+    logger.info(f"Embedding type: {args.embedding_type}")
+    logger.info(f"Learning rate scheduler: {args.scheduler}")
+    logger.info(f"Number of families: {args.num_families}")
+    logger.info(f"Ensembles per family: {args.ensembles_per_family}")
 
+    logger.info("Loading conformer libraries")
+    conformer_libraries = {
+        family: ml.ConformerLibrary(path)
+        for family, path in CONFORMER_LIBRARY_PATHS.items()
+    }
+    logger.info(f"Loaded conformer libraries: {', '.join(conformer_libraries.keys())}")
+
+    logger.info("Creating dataset")
+    dataset = MultiFamilyConformerDataset(
+        conformer_libraries=conformer_libraries,
+        cutoff=CUTOFF,
+        sample_size=SAMPLE_SIZE,
+        max_conformers=MAX_CONFORMERS,
+        exclude_molecules=EXCLUDED_MOLECULES,
+        num_families=args.num_families,
+        ensembles_per_family=args.ensembles_per_family
+    )
+    logger.info("Dataset created successfully")
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
-    logging.info(f"Embedding type: {args.embedding_type}")
-    logging.info(f"Learning rate scheduler: {args.scheduler}")
-
-    conformer_ensemble = ml.ConformerLibrary(CONFORMER_LIBRARY_PATH)
-    logging.info(f"Loaded conformer ensemble from {CONFORMER_LIBRARY_PATH}")
-
-    dataset = ConformerDataset(conformer_ensemble, CUTOFF, num_ensembles=NUM_ENSEMBLES, 
-                               sample_size=SAMPLE_SIZE, exclude_molecules=EXCLUDED_MOLECULES)    
+    logger.info(f"Using device: {device}")
     
     avg_num_neighbors, unique_atomic_numbers = calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device)
     np.save(f'{OUTPUT_PATH}/unique_atomic_numbers.npy', np.array(unique_atomic_numbers))
-    logging.info(f"Average number of neighbors: {avg_num_neighbors}")
-    logging.info(f"Unique atomic numbers: {unique_atomic_numbers}")
+    logger.info(f"Average number of neighbors: {avg_num_neighbors}")
+    logger.info(f"Unique atomic numbers: {unique_atomic_numbers}")
 
     z_table = tools.AtomicNumberTable(unique_atomic_numbers)
 
+    logger.info("Creating model config")
     model_config = {
         "r_max": CUTOFF,
         "num_bessel": 8,
@@ -573,13 +358,33 @@ if __name__ == "__main__":
         "gate": torch.nn.functional.silu,
         "avg_num_neighbors": avg_num_neighbors,
     }
-    logging.info(f"Model configuration: {model_config}")
+    logger.info(f"Model configuration: {model_config}")
 
-    trained_model = train_equicat(model_config, z_table, conformer_ensemble, CUTOFF, device, args.embedding_type, args.scheduler, args.resume_from_checkpoint)
+    logger.info("Initializing model")
+    model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
+    print(model)
+    logger.info(f"Model initialized and moved to {device}")
 
-    torch.save(trained_model.state_dict(), f"{OUTPUT_PATH}/trained_equicat_model.pt")
-    logging.info("Model training completed and saved.")
+    logger.info("Starting training process")
+    train_equicat(model, dataset, device, args.embedding_type, args.scheduler, args)
+    logger.info("Training process completed")
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="EQUICAT Model Training")
+    parser.add_argument('--embedding_type', type=str, default='improved_self_attention',
+                        choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
+                        help='Type of embedding to use for loss computation')
+    parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
+    parser.add_argument('--scheduler', type=str, default='step',
+                        choices=['plateau', 'step', 'cosine', 'onecycle'],
+                        help='Type of learning rate scheduler to use')
+    parser.add_argument('--num_families', type=int, default=None, help='Number of molecule families to use')
+    parser.add_argument('--ensembles_per_family', type=int, default=None, help='Number of ensembles to use per family')
+    args = parser.parse_args()
+
+    start_time = time.time()
+    main(args)
     end_time = time.time()
     total_runtime = end_time - start_time
-    logging.info(f"Total runtime: {total_runtime:.2f} seconds")
+    logger.info(f"Total runtime: {total_runtime:.2f} seconds")
+                        
