@@ -56,8 +56,8 @@ np.random.seed(0)
 
 # Constants
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/loss_curves"
-LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/"
-LOG_FILE = os.path.join(LOG_FILE_PATH, "data_loader.log")
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/develop_op"
+LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
 
 def plot_average_loss_and_learning_rate(log_file):
     """
