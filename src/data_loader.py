@@ -85,7 +85,7 @@ np.random.seed(0)
 # Constants
 CONFORMER_LIBRARY_PATH = "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"
 CUTOFF = 6.0
-NUM_ENSEMBLES = 806
+NUM_ENSEMBLES = 80
 SAMPLE_SIZE = 10
 BATCH_SIZE = 6
 LOG_FILE = "/Users/utkarsh/MMLI/equicat/output/data_loader.log"
