@@ -48,7 +48,9 @@ logger = logging.getLogger('data_loader')
 CUTOFF = 6.0
 MAX_CONFORMERS = 5
 SAMPLE_SIZE = 10
-LOG_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/data_loader.log"
+LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
+
+# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
 
 def setup_logging(log_file):
     logger.setLevel(logging.INFO)
@@ -181,7 +183,7 @@ class MultiFamilyConformerDataset(Dataset):
         library = self.conformer_libraries[family]
         with library.reading():
             conformer = library[key]
-            coords = torch.tensor(conformer.coords, dtype=torch.float32)
+            coords = torch.tensor(conformer.coords, dtype=torch.float64)
             atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
             z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
 
@@ -194,7 +196,7 @@ class MultiFamilyConformerDataset(Dataset):
                 )
                 atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
                 torch_geo_data = Data(
-                    x=torch.tensor(atomic_data.node_attrs, dtype=torch.float32),
+                    x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64),
                     positions=atomic_data.positions,
                     edge_index=atomic_data.edge_index,
                     atomic_numbers=atomic_numbers,
@@ -251,7 +253,7 @@ class MultiFamilyConformerDataset(Dataset):
             library = self.conformer_libraries[family]
             with library.reading():
                 conformer = library[key]
-                coords = torch.tensor(conformer.coords, dtype=torch.float32)
+                coords = torch.tensor(conformer.coords, dtype=torch.float64)
                 atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
                 z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
 
@@ -264,7 +266,7 @@ class MultiFamilyConformerDataset(Dataset):
                     )
                     atomic_data = data.AtomicData.from_config(config, z_table=z_table, cutoff=self.cutoff)
                     torch_geo_data = Data(
-                        x=torch.tensor(atomic_data.node_attrs, dtype=torch.float32),
+                        x=torch.tensor(atomic_data.node_attrs, dtype=torch.float64),
                         positions=atomic_data.positions,
                         edge_index=atomic_data.edge_index,
                         atomic_numbers=atomic_numbers,
@@ -351,12 +353,16 @@ def main():
     """
     logger.info("Starting main function for testing data_loader.py")
 
-    # Example usage with actual data
     conformer_libraries = {
-        "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
-        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
-        "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
+        # "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
+        # "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
+        # "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        # "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
+
+        "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
+        "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
+        "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
     }
     
     excluded_molecules = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
