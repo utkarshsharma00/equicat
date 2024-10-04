@@ -56,6 +56,9 @@ def setup_logging(log_file):
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
 
+setup_logging(LOG_FILE)
+logger.info("Logging initialized for data_loader")
+
 class MultiFamilyConformerDataset(Dataset):
     def __init__(
         self,
@@ -351,7 +354,9 @@ def main():
     # Example usage with actual data
     conformer_libraries = {
         "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/molnet.clib"),
+        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
+        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
     }
     
     excluded_molecules = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']

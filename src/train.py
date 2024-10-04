@@ -36,14 +36,16 @@ logger = logging.getLogger('train')
 # Constants
 CONFORMER_LIBRARY_PATHS = {
     "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
-    "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/molnet.clib",
+    "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib",
+    "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
+    "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib",
 }
 OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/"
 SAMPLE_SIZE = 10
-MAX_CONFORMERS = 5
+MAX_CONFORMERS = 8
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
-EPOCHS = 25
+EPOCHS = 50
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 5
 EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
