@@ -48,9 +48,8 @@ logger = logging.getLogger('data_loader')
 CUTOFF = 6.0
 MAX_CONFORMERS = 5
 SAMPLE_SIZE = 10
-LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
-
-# CONFORMER_LIBRARY_PATH = "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"
+# LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
+LOG_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/data_loader.log"
 
 def setup_logging(log_file):
     logger.setLevel(logging.INFO)
@@ -354,15 +353,15 @@ def main():
     logger.info("Starting main function for testing data_loader.py")
 
     conformer_libraries = {
-        # "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        # "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
-        # "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
-        # "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
+        "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
+        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
+        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
 
-        "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
-        "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
-        "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
+        # "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
+        # "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
+        # "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        # "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
     }
     
     excluded_molecules = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']

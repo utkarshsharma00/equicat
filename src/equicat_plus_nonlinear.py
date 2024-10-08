@@ -92,7 +92,7 @@ class CustomNonLinearReadout(nn.Module):
         None
     """
 
-    def __init__(self, irreps_in, irreps_out, hidden_irreps=[256, 128], gate=torch.nn.functional.silu):
+    def __init__(self, irreps_in, irreps_out, hidden_irreps=[256, 192], gate=torch.nn.functional.silu):
         super().__init__()
         self.irreps_in = o3.Irreps(irreps_in)
         self.irreps_out = o3.Irreps(irreps_out)
@@ -174,12 +174,12 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         equicat_output_irreps = model_config['hidden_irreps']
 
         # Define the output irreps
-        self.output_irreps = "64x0e"  # You can adjust this as needed
+        self.output_irreps = "192x0e"  # You can adjust this as needed
 
         self.non_linear_readout = CustomNonLinearReadout(
             irreps_in=equicat_output_irreps,
             irreps_out=self.output_irreps,
-            hidden_irreps=[256, 128],
+            hidden_irreps=[256, 192],
             gate=self.model_config['gate']
         )
         print(f"Initialized CustomNonLinearReadout with input irreps: {equicat_output_irreps}")

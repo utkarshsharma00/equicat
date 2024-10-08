@@ -25,7 +25,7 @@ from collections import OrderedDict
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import MultiFamilyConformerDataset
 from conformer_ensemble_embedding_combiner import process_molecule_conformers, move_to_device
-from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR, CosineAnnealingWarmRestarts
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
@@ -51,9 +51,9 @@ SAMPLE_SIZE = 10
 MAX_CONFORMERS = 8
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
-EPOCHS = 50
+EPOCHS = 150
 GRADIENT_CLIP_VALUE = 1.0
-CHECKPOINT_INTERVAL = 5
+CHECKPOINT_INTERVAL = 10
 EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
 
 def setup_logging(log_file):
@@ -72,7 +72,9 @@ def get_lr(optimizer):
 
 def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
     if scheduler_type == 'cosine':
-        return CosineAnnealingLR(optimizer, T_max=25 * steps_per_epoch)
+        return CosineAnnealingLR(optimizer, T_max=steps_per_epoch)
+    elif scheduler_type == 'cosine_restart':
+        return CosineAnnealingWarmRestarts(optimizer, T_0=15, T_mult=2)
     elif scheduler_type == 'plateau':
         return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
@@ -185,7 +187,7 @@ def compute_contrastive_loss(sample_embeddings, temperature=0.1):
     
     return loss.mean()
 
-def train_equicat(model, dataset, device, embedding_type, scheduler_type, args):
+def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch):
     logger.info("Starting train_equicat function")
     
     num_samples = len(dataset)
@@ -198,14 +200,13 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args):
 
     best_loss = float('inf')
     best_model = None
-    patience = 30
+    patience = 45
     patience_counter = 0
     logger.info(f"Early stopping patience set to {patience} epochs")
 
     all_molecule_embeddings = {}
-    final_molecule_embeddings = {}
 
-    for epoch in range(EPOCHS):
+    for epoch in range(start_epoch, EPOCHS):
         logger.info(f"Starting epoch {epoch+1}/{EPOCHS}")
         model.train()
         epoch_loss = 0.0
@@ -248,45 +249,104 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args):
         else:
             scheduler.step()
 
+        is_best = False
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             best_model = model.state_dict()
             patience_counter = 0
+            is_best = True
             logger.info(f"New best model found with loss: {best_loss:.6f}")
         else:
             patience_counter += 1
             logger.info(f"No improvement in loss. Patience counter: {patience_counter}/{patience}")
 
+        # Save checkpoint every CHECKPOINT_INTERVAL epochs
+        if (epoch + 1) % CHECKPOINT_INTERVAL == 0 or is_best:
+            save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH, is_best)
+
         if patience_counter >= patience:
             logger.info(f"Early stopping triggered after {epoch+1} epochs")
             break
-
-        if (epoch + 1) % CHECKPOINT_INTERVAL == 0:
-            save_checkpoint(epoch, model, optimizer, scheduler, avg_epoch_loss, OUTPUT_PATH)
 
     logger.info("Training completed")
     logger.info(f"Best model had a loss of {best_loss:.6f}")
     
     # Load the best model for final embeddings computation
-    model.load_state_dict(best_model)
+    best_model_path = f'{OUTPUT_PATH}/checkpoints/best_model.pt'
+    logger.info(f"Loading best model from {best_model_path}")
+    model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
+    logger.info("Best model loaded successfully")
 
     # Compute final embeddings using the best model
     logger.info("Computing final embeddings using the best model")
-    
+
     model.eval()
     final_molecule_embeddings = {}
+    total_molecules = sum(len(keys) for keys in dataset.family_keys.values())
+    processed_molecules = 0
+    total_conformers = 0
+
     with torch.no_grad():
         for family, keys in dataset.family_keys.items():
+            logger.info(f"Processing family: {family}")
             for key in keys:
-                atomic_data_list = dataset.get_molecule_data(key)
-                sample_embeddings = process_sample(model, [(atomic_data_list, key, family)], device, embedding_type)
-                embedding, _, _ = sample_embeddings[0]
-                final_molecule_embeddings[key] = embedding.cpu().numpy()
+                atomic_data_list = dataset.get_molecule_data(key, max_conformers=None)  # Get all conformers
+                num_conformers = len(atomic_data_list)
+                total_conformers += num_conformers
+                logger.info(f"Processing molecule {key} from {family} with {num_conformers} conformers")
+                
+                molecule_embeddings = []
+                for conformer_idx, conformer in enumerate(atomic_data_list):
+                    conformer = move_to_device(conformer, device)
+                    input_dict = {
+                        'positions': conformer.positions,
+                        'atomic_numbers': conformer.atomic_numbers,
+                        'edge_index': conformer.edge_index
+                    }
+                    output = model(input_dict)
+                    molecule_embeddings.append(output)
+                    logger.debug(f"  Processed conformer {conformer_idx + 1}/{num_conformers} for molecule {key}")
+                
+                molecule_embeddings = torch.stack(molecule_embeddings)
+                logger.info(f"Stacked embeddings shape for {key}: {molecule_embeddings.shape}")
+                
+                averaged_embedding = process_molecule_conformers(molecule_embeddings, model.non_linear_readout.irreps_out)
+                
+                scalar, vector = averaged_embedding[embedding_type]
+                if scalar is not None and vector is not None:
+                    combined = torch.cat([scalar.view(-1), vector.view(-1)])
+                    logger.info(f"Combined embedding shape for {key}: {combined.shape}")
+                elif scalar is not None:
+                    combined = scalar.view(-1)
+                    logger.info(f"Scalar-only embedding shape for {key}: {combined.shape}")
+                else:
+                    combined = vector.view(-1)
+                    logger.info(f"Vector-only embedding shape for {key}: {combined.shape}")
+                
+                final_molecule_embeddings[f"{family}_{key}"] = combined.cpu().numpy()
+                
+                processed_molecules += 1
+                logger.info(f"Processed {processed_molecules}/{total_molecules} molecules")
 
     logger.info(f"Computed final embeddings for {len(final_molecule_embeddings)} molecules")
+    logger.info(f"Total conformers processed: {total_conformers}")
+
+    # Calculate and log statistics
+    conformers_per_molecule = [len(dataset.get_molecule_data(key, max_conformers=None)) for family, keys in dataset.family_keys.items() for key in keys]
+    avg_conformers = sum(conformers_per_molecule) / len(conformers_per_molecule)
+    min_conformers = min(conformers_per_molecule)
+    max_conformers = max(conformers_per_molecule)
+
+    logger.info(f"Conformer statistics:")
+    logger.info(f"  Average conformers per molecule: {avg_conformers:.2f}")
+    logger.info(f"  Minimum conformers for a molecule: {min_conformers}")
+    logger.info(f"  Maximum conformers for a molecule: {max_conformers}")
 
     # Save the final molecule embeddings
     save_final_embeddings(final_molecule_embeddings, OUTPUT_PATH)
+    logger.info("Final embeddings saved successfully")
+
+    return model
 
 def save_final_embeddings(embeddings, output_path):
     embeddings_file = f'{output_path}/final_molecule_embeddings.json'
@@ -299,16 +359,27 @@ def save_final_embeddings(embeddings, output_path):
     logger.info(f"Final molecule embeddings saved to {embeddings_file}")
     logger.info(f"Number of molecules with saved embeddings: {len(embeddings)}")       
 
-def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path):
-    checkpoint_path = f'{output_path}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
-    torch.save({
+def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path, is_best=False):
+    checkpoint = {
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss,
-    }, checkpoint_path)
+    }
+    
+    if is_best:
+        checkpoint_path = f'{output_path}/checkpoints/best_model.pt'
+    else:
+        checkpoint_path = f'{output_path}/checkpoints/checkpoint_epoch_{epoch+1}.pt'
+    
+    torch.save(checkpoint, checkpoint_path)
     logger.info(f"Checkpoint saved to {checkpoint_path}")
+
+    if epoch + 1 == EPOCHS:
+        final_model_path = f'{output_path}/checkpoints/final_model.pt'
+        torch.save(checkpoint, final_model_path)
+        logger.info(f"Final model saved to {final_model_path}")
 
 def main(args):
     logger.info("Starting main function")
@@ -350,6 +421,7 @@ def main(args):
     z_table = tools.AtomicNumberTable(unique_atomic_numbers)
 
     logger.info("Creating model config")
+
     model_config = {
         "r_max": CUTOFF,
         "num_bessel": 8,
@@ -373,9 +445,21 @@ def main(args):
     print(model)
     logger.info(f"Model initialized and moved to {device}")
 
+    start_epoch = 0
+    if args.resume_from_checkpoint:
+        logger.info(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
+        checkpoint = torch.load(args.resume_from_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        start_epoch = checkpoint['epoch']
+        logger.info(f"Resumed from epoch {start_epoch}")
+
     logger.info("Starting training process")
-    train_equicat(model, dataset, device, args.embedding_type, args.scheduler, args)
+    trained_model = train_equicat(model, dataset, device, args.embedding_type, args.scheduler, args, start_epoch)
     logger.info("Training process completed")
+
+    # Final model is already saved in train_equicat function
+
+    logger.info("Embedding generation process completed")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EQUICAT Model Training")
@@ -384,7 +468,7 @@ if __name__ == "__main__":
                         help='Type of embedding to use for loss computation')
     parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
     parser.add_argument('--scheduler', type=str, default='step',
-                        choices=['plateau', 'step', 'cosine', 'onecycle'],
+                        choices=['plateau', 'step', 'cosine', 'cosine_restart', 'onecycle'],
                         help='Type of learning rate scheduler to use')
     parser.add_argument('--num_families', type=int, default=None, help='Number of molecule families to use')
     parser.add_argument('--ensembles_per_family', type=int, default=None, help='Number of ensembles to use per family')
@@ -395,4 +479,3 @@ if __name__ == "__main__":
     end_time = time.time()
     total_runtime = end_time - start_time
     logger.info(f"Total runtime: {total_runtime:.2f} seconds")
-                        
