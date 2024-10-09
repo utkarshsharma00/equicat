@@ -45,7 +45,7 @@ CONFORMER_LIBRARY_PATHS = {
     "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
     "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
 }
-
+# OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op"
 OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op"
 SAMPLE_SIZE = 10
 MAX_CONFORMERS = 8
@@ -290,7 +290,7 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
         for family, keys in dataset.family_keys.items():
             logger.info(f"Processing family: {family}")
             for key in keys:
-                atomic_data_list = dataset.get_molecule_data(key, max_conformers=None)  # Get all conformers
+                atomic_data_list = dataset.get_molecule_data(key, use_all_conformers=True)
                 num_conformers = len(atomic_data_list)
                 total_conformers += num_conformers
                 logger.info(f"Processing molecule {key} from {family} with {num_conformers} conformers")
@@ -330,17 +330,6 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
     logger.info(f"Computed final embeddings for {len(final_molecule_embeddings)} molecules")
     logger.info(f"Total conformers processed: {total_conformers}")
-
-    # Calculate and log statistics
-    conformers_per_molecule = [len(dataset.get_molecule_data(key, max_conformers=None)) for family, keys in dataset.family_keys.items() for key in keys]
-    avg_conformers = sum(conformers_per_molecule) / len(conformers_per_molecule)
-    min_conformers = min(conformers_per_molecule)
-    max_conformers = max(conformers_per_molecule)
-
-    logger.info(f"Conformer statistics:")
-    logger.info(f"  Average conformers per molecule: {avg_conformers:.2f}")
-    logger.info(f"  Minimum conformers for a molecule: {min_conformers}")
-    logger.info(f"  Maximum conformers for a molecule: {max_conformers}")
 
     # Save the final molecule embeddings
     save_final_embeddings(final_molecule_embeddings, OUTPUT_PATH)

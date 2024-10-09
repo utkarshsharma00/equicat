@@ -46,10 +46,10 @@ logger = logging.getLogger('data_loader')
 
 # Constants
 CUTOFF = 6.0
-MAX_CONFORMERS = 5
+MAX_CONFORMERS = 8
 SAMPLE_SIZE = 10
-# LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
-LOG_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/data_loader.log"
+LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
+# LOG_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/data_loader.log"
 
 def setup_logging(log_file):
     logger.setLevel(logging.INFO)
@@ -177,7 +177,7 @@ class MultiFamilyConformerDataset(Dataset):
         
         return selected_indices
 
-    def get_molecule_data(self, key):
+    def get_molecule_data(self, key, use_all_conformers=False):
         family = self.molecule_to_family[key]
         library = self.conformer_libraries[family]
         with library.reading():
@@ -186,9 +186,13 @@ class MultiFamilyConformerDataset(Dataset):
             atomic_numbers = torch.tensor([atom.element for atom in conformer.atoms], dtype=torch.long)
             z_table = tools.AtomicNumberTable(torch.unique(atomic_numbers).tolist())
 
-            selected_indices = self.selected_conformers[key]
+            if use_all_conformers:
+                indices = range(len(coords))
+            else:
+                indices = self.selected_conformers[key]
+
             atomic_data_list = []
-            for i in selected_indices:
+            for i in indices:
                 config = data.Configuration(
                     atomic_numbers=atomic_numbers.numpy(),
                     positions=coords[i].numpy()
@@ -353,15 +357,15 @@ def main():
     logger.info("Starting main function for testing data_loader.py")
 
     conformer_libraries = {
-        "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
-        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
-        "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
+        # "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
+        # "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
+        # "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        # "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
 
-        # "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
-        # "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
-        # "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
-        # "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
+        "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
+        "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
+        "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
     }
     
     excluded_molecules = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
