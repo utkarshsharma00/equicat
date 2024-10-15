@@ -113,26 +113,26 @@ class DeepSets(nn.Module):
         if scalar_dim > 0:
             self.phi_scalar = nn.Sequential(
                 nn.Linear(scalar_dim, scalar_dim),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim, scalar_dim),
-                nn.ReLU(),
+                nn.SiLU(),
             )
             self.rho_scalar = nn.Sequential(
                 nn.Linear(scalar_dim, scalar_dim),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim, scalar_dim),
             )
         
         if vector_dim > 0:
             self.phi_vector = nn.Sequential(
                 nn.Linear(vector_dim * 3, vector_dim * 3),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 3, vector_dim * 3),
-                nn.ReLU(),
+                nn.SiLU(),
             )
             self.rho_vector = nn.Sequential(
                 nn.Linear(vector_dim * 3, vector_dim * 3),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 3, vector_dim * 3),
             )
 
@@ -195,14 +195,14 @@ class SelfAttention(nn.Module):
         if scalar_dim > 0:
             self.output_scalar = nn.Sequential(
                 nn.Linear(total_dim, scalar_dim),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim, scalar_dim),
             )
         
         if vector_dim > 0:
             self.output_vector = nn.Sequential(
                 nn.Linear(total_dim, vector_dim * 3),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 3, vector_dim * 3),
             )
 
@@ -270,17 +270,17 @@ class ImprovedDeepSets(nn.Module):
         if scalar_dim > 0:
             self.phi_scalar = nn.Sequential(
                 nn.Linear(scalar_dim, scalar_dim * 2),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim * 2, scalar_dim * 2),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim * 2, scalar_dim),
-                nn.ReLU(),
+                nn.SiLU(),
             )
             self.rho_scalar = nn.Sequential(
                 nn.Linear(scalar_dim, scalar_dim * 2),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim * 2, scalar_dim * 2),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim * 2, scalar_dim),
             )
             self.layer_norm_scalar = nn.LayerNorm(scalar_dim)
@@ -288,17 +288,17 @@ class ImprovedDeepSets(nn.Module):
         if vector_dim > 0:
             self.phi_vector = nn.Sequential(
                 nn.Linear(vector_dim * 3, vector_dim * 6),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 6, vector_dim * 6),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 6, vector_dim * 3),
-                nn.ReLU(),
+                nn.SiLU(),
             )
             self.rho_vector = nn.Sequential(
                 nn.Linear(vector_dim * 3, vector_dim * 6),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 6, vector_dim * 6),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 6, vector_dim * 3),
             )
             self.layer_norm_vector = nn.LayerNorm(vector_dim * 3)
@@ -360,27 +360,28 @@ class ImprovedSelfAttention(nn.Module):
         self.vector_dim = vector_dim
         total_dim = scalar_dim + vector_dim * 3
         
+        #! SiLU activation function and RMSNorm layer
         self.attention = nn.MultiheadAttention(total_dim, num_heads) # Multi-head attention
         self.norm1 = nn.LayerNorm(total_dim) # Layer normalization 1
         self.norm2 = nn.LayerNorm(total_dim) # Layer normalization 2
         
         self.ffn = nn.Sequential(
             nn.Linear(total_dim, total_dim * 4),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(total_dim * 4, total_dim),
         )
         
         if scalar_dim > 0:
             self.output_scalar = nn.Sequential(
                 nn.Linear(total_dim, scalar_dim * 2),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(scalar_dim * 2, scalar_dim),
             )
         
         if vector_dim > 0:
             self.output_vector = nn.Sequential(
                 nn.Linear(total_dim, vector_dim * 6),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(vector_dim * 6, vector_dim * 3),
             )
     
