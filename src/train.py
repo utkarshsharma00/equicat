@@ -36,13 +36,13 @@ logger = logging.getLogger('train')
 # Constants
 CONFORMER_LIBRARY_PATHS = {
     # "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
-    # "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib",
-    # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
+    # "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
+    # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib",
     # "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib",
 
     "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
-    "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib",
-    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
+    "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
+    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib",
     "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
 }
 # OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op"

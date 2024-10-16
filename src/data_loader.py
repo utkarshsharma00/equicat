@@ -303,13 +303,13 @@ def main():
     conformer_libraries = {
 
         "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
-        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
         "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
 
         # "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
-        # "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
-        # "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        # "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        # "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
         # "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
     }
     
