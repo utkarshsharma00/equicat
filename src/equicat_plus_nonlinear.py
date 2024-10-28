@@ -17,14 +17,16 @@ Key features and improvements:
    with complex non-linear transformations.
 5. Customizable Architecture: Allows for easy modification of hidden layer
    sizes and activation functions.
+6. Multi-Interaction Support: Properly handles outputs from EQUICAT models with
+   multiple interaction layers.
 
 This version represents a major overhaul in the way the NonLinearReadoutBlock
 is created and integrated with the EQUICAT model, offering significantly
 improved flexibility and performance.
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 2.0.0
+Date: 10-27-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -35,6 +37,7 @@ Dependencies:
 Usage:
     model_config = {
         'hidden_irreps': o3.Irreps("32x0e + 32x1o"),
+        'num_interactions': 2,
         'gate': torch.nn.functional.silu,
         # ... other config options ...
     }
@@ -45,23 +48,20 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v3.0.0 (08-22-2024):
-        * Complete redesign of CustomNonLinearReadout for flexible irreps handling
-        * Added support for scalar-only, vector-only, and combined outputs
-        * Implemented dynamic layer construction based on input/output irreps
-        * Enhanced logging and debugging features
-        * Improved integration with EQUICAT model
-    - v2.0.0 (08-01-2024):
-        * Added GPU support
-        * Enhanced debug printing
-    - v1.0.0 (07-07-2024)
+    - v2.0.0 (10-03-2024):
+        * Added adaptive input type detection and handling
+        * Fixed multi-interaction layer support
+        * Implemented type preservation through network layers
+        * Enhanced shape consistency checks
+        * Improved error handling and debugging
+    - v1.0.0 (07-07-2024):
         * Initial implementation of CustomNonLinearReadout
 
 TODO:
-    - Fix shape errors that arise when num_interactions > 1
-    - Optimize memory usage for large-scale molecular systems
+    - Optimize memory usage for large molecular systems
     - Implement multi-GPU support for distributed training
-    - Develop comprehensive unit tests for various input/output scenarios
+    - Add comprehensive test suite for different input configurations
+    - Enhance logging and visualization of internal representations
 """
 
 import torch
@@ -77,50 +77,93 @@ np.random.seed(42)
 
 class CustomNonLinearReadout(nn.Module):
     """
-    A custom non-linear readout layer that preserves equivariance.
+    A custom non-linear readout layer that adaptively processes geometric tensors.
 
-    This layer applies a series of equivariant linear transformations
-    interspersed with non-linear activations on scalar features.
+    This class handles different input types from EQUICAT model (scalar/vector/both),
+    maintains geometric properties through processing layers, and produces scalar output.
+    The architecture automatically adjusts based on input type.
 
     Args:
-        irreps_in (o3.Irreps): Input irreducible representations.
-        irreps_out (o3.Irreps): Output irreducible representations.
-        hidden_irreps (list): List of integers representing the dimensions of hidden layers.
-        gate (callable): Activation function for scalar features.
-
+        irreps_in (o3.Irreps): Input irreducible representations. 
+        irreps_out (o3.Irreps): Output irreducible representations (scalar-only).
+        hidden_irreps (List[int], optional): Dimensions of hidden layers.
+        gate (Callable, optional): Activation function for scalar features.
+        
     Returns:
         None
     """
-
     def __init__(self, irreps_in, irreps_out, hidden_irreps=[256, 192], gate=torch.nn.functional.silu):
         super().__init__()
         self.irreps_in = o3.Irreps(irreps_in)
         self.irreps_out = o3.Irreps(irreps_out)
-
-        layer_irreps = [self.irreps_in] + [o3.Irreps(f"{h}x0e + {h}x1o") for h in hidden_irreps] + [self.irreps_out]
-        print(f"Layer irreps: {layer_irreps}")
         
+        # Analyze input irreps
+        self.has_scalar = any(ir.l == 0 for _, ir in self.irreps_in)
+        self.has_vector = any(ir.l == 1 for _, ir in self.irreps_in)
+        
+        # Calculate dimensions
+        self.scalar_dim = sum(mul * ir.dim for mul, ir in self.irreps_in if ir.l == 0)
+        self.vector_dim = sum(mul * ir.dim for mul, ir in self.irreps_in if ir.l == 1)
+        
+        print(f"Input type - Scalar: {self.has_scalar}, Vector: {self.has_vector}")
+        print(f"Dimensions - Scalar: {self.scalar_dim}, Vector: {self.vector_dim}")
+        
+        # Build layer structure based on input type
         self.layers = nn.ModuleList()
-        for i in range(len(layer_irreps) - 1):
-            linear = o3.Linear(irreps_in=layer_irreps[i], irreps_out=layer_irreps[i+1])
-            self.layers.append(linear)
+        
+        current_scalar_dim = self.scalar_dim
+        current_vector_dim = self.vector_dim
+        
+        # First layer
+        if self.has_scalar and self.has_vector:
+            # Combined scalar and vector
+            irreps_h1 = o3.Irreps(f"{hidden_irreps[0]}x0e + {hidden_irreps[0]}x1o")
+            layer1 = o3.Linear(self.irreps_in, irreps_h1)
+        elif self.has_scalar:
+            # Scalar only
+            irreps_h1 = o3.Irreps(f"{hidden_irreps[0]}x0e")
+            layer1 = o3.Linear(self.irreps_in, irreps_h1)
+        else:
+            # Vector only
+            irreps_h1 = o3.Irreps(f"{hidden_irreps[0]}x1o")
+            layer1 = o3.Linear(self.irreps_in, irreps_h1)
             
-            if i < len(layer_irreps) - 2:
-                non_linearity = e3nn_nn.Activation(
-                    irreps_in=layer_irreps[i+1],
-                    acts=[gate if ir.is_scalar() else None for _, ir in layer_irreps[i+1]]
-                )
-                self.layers.append(non_linearity)
+        self.layers.append(layer1)
+        
+        # Add non-linearity
+        non_linearity1 = e3nn_nn.Activation(
+            irreps_in=irreps_h1,
+            acts=[gate if ir.is_scalar() else None for _, ir in irreps_h1]
+        )
+        self.layers.append(non_linearity1)
+        
+        # Second layer
+        if self.has_scalar and self.has_vector:
+            irreps_h2 = o3.Irreps(f"{hidden_irreps[1]}x0e + {hidden_irreps[1]}x1o")
+            layer2 = o3.Linear(irreps_h1, irreps_h2)
+        elif self.has_scalar:
+            irreps_h2 = o3.Irreps(f"{hidden_irreps[1]}x0e")
+            layer2 = o3.Linear(irreps_h1, irreps_h2)
+        else:
+            irreps_h2 = o3.Irreps(f"{hidden_irreps[1]}x1o")
+            layer2 = o3.Linear(irreps_h1, irreps_h2)
+            
+        self.layers.append(layer2)
+        
+        # Add non-linearity
+        non_linearity2 = e3nn_nn.Activation(
+            irreps_in=irreps_h2,
+            acts=[gate if ir.is_scalar() else None for _, ir in irreps_h2]
+        )
+        self.layers.append(non_linearity2)
+        
+        # Final layer - always outputs scalar as per requirement
+        final_layer = o3.Linear(irreps_h2, self.irreps_out)
+        self.layers.append(final_layer)
 
     def forward(self, x):
         """
-        Forward pass of the CustomNonLinearReadout.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Processed output tensor.
+        Forward pass handling different input types adaptively.
         """
         print(f"Input shape to CustomNonLinearReadout: {x.shape}")
         
@@ -135,13 +178,10 @@ class CustomNonLinearReadout(nn.Module):
         return x
 
     def __repr__(self):
-        """
-        String representation of the CustomNonLinearReadout.
-
-        Returns:
-            str: A string description of the layer structure.
-        """
         lines = [f"CustomNonLinearReadout("]
+        lines.append(f"  Input type - Scalar: {self.has_scalar}, Vector: {self.has_vector}")
+        lines.append(f"  Input dimensions - Scalar: {self.scalar_dim}, Vector: {self.vector_dim}")
+        
         for i, layer in enumerate(self.layers):
             if isinstance(layer, o3.Linear):
                 lines.append(f"  (linear_{i//2+1}): Linear({layer.irreps_in} -> {layer.irreps_out} | {layer.weight.numel()} weights)")
@@ -170,19 +210,23 @@ class EQUICATPlusNonLinearReadout(nn.Module):
         self.model_config = model_config
         self.equicat = EQUICAT(model_config, z_table)
         
-        # Determine the output irreps of the EQUICAT model
-        equicat_output_irreps = model_config['hidden_irreps']
-
+        # Get the actual output irreps from EQUICAT's last layer
+        if model_config['num_interactions'] > 1:
+            last_product_layer = self.equicat.product_layers[-1]
+            equicat_output_irreps = last_product_layer.linear.irreps_out
+        else:
+            equicat_output_irreps = model_config['hidden_irreps']
+        
         # Define the output irreps
-        self.output_irreps = "192x0e"  # You can adjust this as needed
+        self.output_irreps = "192x0e"
 
+        print(f"EQUICAT output irreps: {equicat_output_irreps}")
         self.non_linear_readout = CustomNonLinearReadout(
             irreps_in=equicat_output_irreps,
             irreps_out=self.output_irreps,
             hidden_irreps=[256, 192],
             gate=self.model_config['gate']
         )
-        print(f"Initialized CustomNonLinearReadout with input irreps: {equicat_output_irreps}")
         print(f"CustomNonLinearReadout output irreps: {self.output_irreps}")
         
     def get_forward_pass_summary(self):

@@ -416,7 +416,7 @@ def main(args):
         "num_bessel": 8,
         "num_polynomial_cutoff": 6,
         "max_ell": 2,
-        "num_interactions": 1,
+        "num_interactions": 2,
         "num_elements": len(z_table),
         "interaction_cls": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
         "interaction_cls_first": modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
