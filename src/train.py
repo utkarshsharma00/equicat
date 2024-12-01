@@ -21,11 +21,13 @@ from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
 from mace import data, modules, tools
 from mace.tools import to_numpy
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
 from data_loader import MultiFamilyConformerDataset
 from conformer_ensemble_embedding_combiner import process_molecule_conformers, move_to_device
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR, CosineAnnealingWarmRestarts
+from molecular_clustering import MolecularClusterProcessor, save_cluster_data
+from typing import Dict, Optional, List, Tuple, Any
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
@@ -37,21 +39,23 @@ logger = logging.getLogger('train')
 CONFORMER_LIBRARY_PATHS = {
     # "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
     # "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
-    # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib",
+    # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiols.clib",
     # "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib",
 
     "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
     "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
-    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib",
+    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
     "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
 }
-# OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op"
-OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op"
-SAMPLE_SIZE = 10
-MAX_CONFORMERS = 8
+# OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large"
+# CLUSTERING_RESULTS_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
+OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/epoch_large"
+CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
+SAMPLE_SIZE = 30
+MAX_CONFORMERS = 10
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
-EPOCHS = 150
+EPOCHS = 5
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 10
 EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
@@ -148,46 +152,331 @@ def log_gradients(model):
             logger.info(f"Gradient stats for {name}:")
             logger.info(f"  Norm: {grad_norm:.6f}, Mean: {grad_mean:.6f}, Std: {grad_std:.6f}")
 
-def compute_contrastive_loss(sample_embeddings, temperature=0.1):
-    embeddings = []
-    families = []
-    for emb, _, family in sample_embeddings:
-        embeddings.append(emb)
-        families.append(family)
+# def compute_contrastive_loss(sample_embeddings, temperature=0.1):
+#     embeddings = []
+#     families = []
+#     for emb, _, family in sample_embeddings:
+#         embeddings.append(emb)
+#         families.append(family)
     
-    if len(embeddings) < 2:
-        logging.warning(f"Not enough embeddings to compute contrastive loss. Only {len(embeddings)} embeddings available.")
-        return torch.tensor(0.0, requires_grad=True)  # Return a dummy loss
+#     if len(embeddings) < 2:
+#         logging.warning(f"Not enough embeddings to compute contrastive loss. Only {len(embeddings)} embeddings available.")
+#         return torch.tensor(0.0, requires_grad=True)  # Return a dummy loss
 
-    embeddings = torch.stack(embeddings)
-    embeddings = F.normalize(embeddings, p=2, dim=1)
+#     embeddings = torch.stack(embeddings)
+#     embeddings = F.normalize(embeddings, p=2, dim=1)
 
-    similarity_matrix = torch.matmul(embeddings, embeddings.T) / temperature
+#     similarity_matrix = torch.matmul(embeddings, embeddings.T) / temperature
     
-    labels = torch.tensor([families.index(f) for f in families], device=embeddings.device)
+#     labels = torch.tensor([families.index(f) for f in families], device=embeddings.device)
     
-    # Create mask for positive pairs
-    pos_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+#     # Create mask for positive pairs
+#     pos_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
     
-    # We don't want to consider the similarity of a sample with itself as a positive pair
-    pos_mask.fill_diagonal_(0)
+#     # We don't want to consider the similarity of a sample with itself as a positive pair
+#     pos_mask.fill_diagonal_(0)
     
-    # Negative mask is just the inverse of the positive mask
-    neg_mask = 1 - pos_mask
+#     # Negative mask is just the inverse of the positive mask
+#     neg_mask = 1 - pos_mask
     
-    # Compute loss
-    exp_sim = torch.exp(similarity_matrix)
+#     # Compute loss
+#     exp_sim = torch.exp(similarity_matrix)
     
-    # Compute positive and negative scores
-    pos_scores = torch.sum(exp_sim * pos_mask, dim=1)
-    neg_scores = torch.sum(exp_sim * neg_mask, dim=1)
+#     # Compute positive and negative scores
+#     pos_scores = torch.sum(exp_sim * pos_mask, dim=1)
+#     neg_scores = torch.sum(exp_sim * neg_mask, dim=1)
     
-    # Compute loss
-    loss = -torch.log(pos_scores / (pos_scores + neg_scores))
+#     # Compute loss
+#     loss = -torch.log(pos_scores / (pos_scores + neg_scores))
     
-    return loss.mean()
+#     return loss.mean()
 
-def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch):
+def initialize_clustering(conformer_libraries):
+    """Initialize molecular clustering before training."""
+    logger.info("Initializing molecular clustering")
+    processor = MolecularClusterProcessor(
+        conformer_libraries,
+        clustering_cutoff=0.2,
+        output_dir=CLUSTERING_RESULTS_DIR
+    )
+    processor.process_all_families()
+    logger.info("Molecular clustering completed")
+
+# Configure logger
+logger = logging.getLogger(__name__)
+
+class ClusterAwareContrastiveLoss:
+    def __init__(
+        self,
+        clustering_results_dir: str,
+        weights: Optional[Dict[str, float]] = None,
+        temperature: float = 0.25,
+    ):
+        """
+        Initialize cluster-aware contrastive loss with family-scoped clustering.
+        
+        Args:
+            clustering_results_dir: Directory containing clustering results
+            weights: Dictionary of weights for different relationship types:
+                - same_family_same_cluster: Weight for molecules in same family and cluster (default: 1.0)
+                - same_family_diff_cluster: Weight for molecules in same family but different clusters (default: 0.5)
+                - diff_family: Weight for molecules from different families (default: -1.0)
+            temperature: Temperature parameter for similarity scaling (default: 0.1)
+        """
+        self.clustering_results_dir = clustering_results_dir
+        self.temperature = temperature
+        
+        # Default weights with hierarchical structure
+        default_weights = {
+            'same_family_same_cluster': 1.0,  # Strong attraction within family+cluster
+            'same_family_diff_cluster': 0.3,  # Medium attraction within family
+            'diff_family': -2.0  # Strong repulsion between families
+        }
+        
+        self.weights = weights if weights is not None else default_weights
+        logger.info(f"Initialized contrastive loss with weights: {self.weights}")
+        
+        # Validate weights
+        self._validate_weights()
+        
+        # Load cluster data
+        self.cluster_data = self._load_cluster_data()
+        
+        # Create family-scoped cluster lookup
+        self.molecule_clusters = self._create_family_scoped_clusters()
+        
+        logger.info(f"Initialized loss with {len(self.molecule_clusters)} molecule mappings")
+
+    def _validate_weights(self):
+        """Validate and log weight configuration."""
+        required_weights = ['same_family_same_cluster', 'same_family_diff_cluster', 'diff_family']
+        for weight_name in required_weights:
+            if weight_name not in self.weights:
+                raise ValueError(f"Missing required weight: {weight_name}")
+        
+        logger.info("\nWeight configuration analysis:")
+        logger.info(f"Same family+cluster attraction: {self.weights['same_family_same_cluster']:.2f}")
+        logger.info(f"Same family attraction: {self.weights['same_family_diff_cluster']:.2f}")
+        logger.info(f"Different family repulsion: {self.weights['diff_family']:.2f}")
+        
+        # Log relative weight strengths
+        cluster_to_family_ratio = self.weights['same_family_same_cluster'] / self.weights['same_family_diff_cluster']
+        logger.info(f"Cluster vs Family strength ratio: {cluster_to_family_ratio:.2f}")
+        
+        if self.weights['diff_family'] > 0:
+            logger.warning("Different family weight is positive - this may lead to undesired attraction between families")
+
+    def _load_cluster_data(self) -> Dict:
+        """
+        Load and validate clustering results from file.
+        
+        Returns:
+            Dict containing cluster mappings and metadata
+        
+        Raises:
+            FileNotFoundError: If cluster data file not found
+            ValueError: If cluster data format is invalid
+        """
+        # Try to load cluster data file
+        cluster_data_path = os.path.join(self.clustering_results_dir, 'butina', 'cluster_data.pt')
+        
+        if not os.path.exists(cluster_data_path):
+            error_msg = f"Cluster data not found at {cluster_data_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        try:
+            data = torch.load(cluster_data_path)
+            
+            # Validate data structure
+            required_keys = ['cluster_mappings', 'family_data', 'metadata']
+            for key in required_keys:
+                if key not in data:
+                    raise ValueError(f"Missing required key '{key}' in cluster data")
+            
+            # Log cluster data summary
+            logger.info("\nLoaded cluster data summary:")
+            logger.info(f"Number of families: {len(data['cluster_mappings'])}")
+            
+            total_molecules = sum(len(mappings) for mappings in data['cluster_mappings'].values())
+            logger.info(f"Total molecules: {total_molecules}")
+            
+            # Log per-family statistics
+            for family, mappings in data['cluster_mappings'].items():
+                num_clusters = len(set(info['cluster_id'] for info in mappings.values()))
+                logger.info(f"{family}: {len(mappings)} molecules in {num_clusters} clusters")
+            
+            return data
+            
+        except Exception as e:
+            error_msg = f"Error loading cluster data: {str(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    def _create_family_scoped_clusters(self) -> Dict[str, Dict[str, Any]]:
+        """Create family-scoped cluster mappings."""
+        molecule_clusters = {}
+        family_cluster_counts = defaultdict(int)
+        
+        for family, family_mappings in self.cluster_data['cluster_mappings'].items():
+            # Track clusters per family
+            family_clusters = set()
+            
+            for mol_key, info in family_mappings.items():
+                cluster_id = info['cluster_id']
+                family_clusters.add(cluster_id)
+                
+                # Create unique family-scoped cluster ID
+                scoped_cluster_id = f"{family}_cluster_{cluster_id}"
+                
+                full_key = f"{family}_{mol_key}"
+                molecule_clusters[full_key] = {
+                    'family': family,
+                    'cluster_id': cluster_id,
+                    'scoped_cluster_id': scoped_cluster_id
+                }
+            
+            family_cluster_counts[family] = len(family_clusters)
+        
+        # Log family-cluster statistics
+        logger.info("\nFamily-Cluster Statistics:")
+        for family, count in family_cluster_counts.items():
+            logger.info(f"{family}: {count} unique clusters")
+            
+        return molecule_clusters
+
+    def _compute_relationship_matrix(self, molecules: List[Tuple[str, str]]) -> torch.Tensor:
+        """
+        Compute relationship matrix between molecules encoding family and cluster relationships.
+        
+        Returns tensor with values:
+            1.0: Same family, same cluster
+            0.5: Same family, different cluster
+            0.0: Different family
+        """
+        n = len(molecules)
+        relationships = torch.zeros((n, n))
+        
+        for i, (key_i, family_i) in enumerate(molecules):
+            mol_i = self.molecule_clusters.get(f"{family_i}_{key_i}")
+            if mol_i is None:
+                continue
+                
+            for j, (key_j, family_j) in enumerate(molecules):
+                if i == j:
+                    continue
+                    
+                mol_j = self.molecule_clusters.get(f"{family_j}_{key_j}")
+                if mol_j is None:
+                    continue
+                
+                # Check family relationship
+                if mol_i['family'] == mol_j['family']:
+                    # Same family - check cluster
+                    if mol_i['scoped_cluster_id'] == mol_j['scoped_cluster_id']:
+                        relationships[i, j] = self.weights['same_family_same_cluster']
+                    else:
+                        relationships[i, j] = self.weights['same_family_diff_cluster']
+                else:
+                    # Different family
+                    relationships[i, j] = self.weights['diff_family']
+        
+        return relationships
+
+    def _log_batch_relationships(self, relationships: torch.Tensor, molecules: List[Tuple[str, str]]):
+        """Log detailed analysis of batch relationships."""
+        n = len(molecules)
+        counts = {
+            'same_family_same_cluster': 0,
+            'same_family_diff_cluster': 0,
+            'diff_family': 0
+        }
+        
+        logger.info("\nBatch Relationship Analysis:")
+        logger.info("Molecule List:")
+        for i, (key, family) in enumerate(molecules):
+            mol = self.molecule_clusters.get(f"{family}_{key}")
+            if mol:
+                logger.info(f"  {i}: {key} (Family: {family}, Cluster: {mol['scoped_cluster_id']})")
+        
+        for i in range(n):
+            for j in range(i+1, n):  # Only count unique pairs
+                rel_strength = relationships[i, j].item()
+                if abs(rel_strength - self.weights['same_family_same_cluster']) < 1e-6:
+                    counts['same_family_same_cluster'] += 1
+                elif abs(rel_strength - self.weights['same_family_diff_cluster']) < 1e-6:
+                    counts['same_family_diff_cluster'] += 1
+                elif abs(rel_strength - self.weights['diff_family']) < 1e-6:
+                    counts['diff_family'] += 1
+        
+        logger.info("\nRelationship Statistics:")
+        total_pairs = sum(counts.values())
+        for rel_type, count in counts.items():
+            percentage = (count / total_pairs * 100) if total_pairs > 0 else 0
+            logger.info(f"{rel_type}: {count} pairs ({percentage:.1f}%)")
+
+    def __call__(self, sample_embeddings):
+        """Compute family-scoped cluster-aware contrastive loss."""
+        embeddings = []
+        molecules = []  # Store (key, family) pairs
+        
+        # Extract embeddings and molecule info
+        for emb, key, family in sample_embeddings:
+            embeddings.append(emb)
+            molecules.append((key, family))
+            
+        if len(embeddings) < 2:
+            logger.warning("Not enough embeddings for contrastive loss")
+            return torch.tensor(0.0, requires_grad=True, device=embeddings[0].device)
+            
+        embeddings = torch.stack(embeddings)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        
+        # Compute similarity matrix
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+        
+        # Compute relationship matrix
+        relationships = self._compute_relationship_matrix(molecules).to(embeddings.device)
+        
+        # Log batch analysis
+        self._log_batch_relationships(relationships, molecules)
+        
+        # Compute weighted loss
+        exp_sim = torch.exp(similarity_matrix)
+        
+        # Separate positive and negative relationships
+        pos_mask = (relationships > 0).float()
+        neg_mask = (relationships < 0).float()
+        
+        # Remove self-similarity
+        pos_mask.fill_diagonal_(0)
+        neg_mask.fill_diagonal_(0)
+        
+        # Weight the relationships
+        weighted_pos = pos_mask * relationships
+        weighted_neg = neg_mask * (-relationships)  # Make negative relationships positive for loss computation
+        
+        # Compute positive and negative scores
+        pos_scores = torch.sum(exp_sim * weighted_pos, dim=1)
+        neg_scores = torch.sum(exp_sim * weighted_neg, dim=1)
+        
+        # Compute loss with numerical stability
+        eps = 1e-8
+        loss = -torch.log((pos_scores + eps) / (neg_scores + eps))
+        
+        # Apply mask for valid samples
+        valid_mask = (pos_scores > 0).float()
+        loss = (loss * valid_mask).sum() / (valid_mask.sum() + eps)
+        
+        # Log loss components
+        logger.info(f"\nLoss Components:")
+        logger.info(f"Average positive score: {pos_scores.mean().item():.4f}")
+        logger.info(f"Average negative score: {neg_scores.mean().item():.4f}")
+        logger.info(f"Final loss: {loss.item():.4f}")
+        
+        return loss
+
+def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch, contrastive_loss_fn):
     logger.info("Starting train_equicat function")
     
     num_samples = len(dataset)
@@ -198,9 +487,21 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
     scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, steps_per_epoch)
     logger.info("Optimizer and scheduler initialized")
 
+    contrastive_loss_fn = ClusterAwareContrastiveLoss(
+    clustering_results_dir=CLUSTERING_RESULTS_DIR,
+    weights={
+        'same_family_same_cluster': 1.0,
+        'same_family_diff_cluster': 0.3,
+        'diff_family': -2.0
+    },
+    temperature=0.25
+)
+
+    logger.info(f"Loaded cluster data: {contrastive_loss_fn.cluster_data}")
+
     best_loss = float('inf')
     best_model = None
-    patience = 45
+    patience = 200
     patience_counter = 0
     logger.info(f"Early stopping patience set to {patience} epochs")
 
@@ -219,7 +520,8 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
             optimizer.zero_grad()
 
             sample_embeddings = process_sample(model, sample, device, embedding_type)
-            loss = compute_contrastive_loss(sample_embeddings)
+            # loss = compute_contrastive_loss(sample_embeddings)
+            loss = contrastive_loss_fn(sample_embeddings)
 
             loss.backward()
             clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
@@ -370,6 +672,35 @@ def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path, is_be
         torch.save(checkpoint, final_model_path)
         logger.info(f"Final model saved to {final_model_path}")
 
+
+def initialize_training(conformer_libraries, clustering_results_dir):
+    """Initialize clustering and validate results before training."""
+    logger.info("Initializing molecular clustering")
+    
+    # Create clustering processor
+    processor = MolecularClusterProcessor(
+        library_paths=conformer_libraries,
+        clustering_cutoff=0.2,
+        output_dir=clustering_results_dir
+    )
+    
+    # Process families and save results
+    processor.process_all_families()
+    
+    # Save cluster data with new format
+    save_cluster_data(processor, clustering_results_dir)
+    
+    # Validate saved data
+    cluster_data_path = os.path.join(clustering_results_dir, 'butina', 'cluster_data.pt')
+    if not os.path.exists(cluster_data_path):
+        raise FileNotFoundError("Clustering failed to save results")
+        
+    data = torch.load(cluster_data_path)
+    logger.info(f"Clustering completed with {len(data['cluster_mappings'])} families")
+    
+    # Return clustering metadata for reference
+    return data['metadata']
+
 def main(args):
     logger.info("Starting main function")
     
@@ -386,6 +717,18 @@ def main(args):
         for family, path in CONFORMER_LIBRARY_PATHS.items()
     }
     logger.info(f"Loaded conformer libraries: {', '.join(conformer_libraries.keys())}")
+
+    # Initialize clustering with validation
+    clustering_metadata = initialize_training(
+        conformer_libraries=CONFORMER_LIBRARY_PATHS,
+        clustering_results_dir=CLUSTERING_RESULTS_DIR
+    )
+    logger.info(f"Clustering initialized with {clustering_metadata['num_families']} families")
+    
+    # Create contrastive loss with new implementation
+    contrastive_loss_fn = ClusterAwareContrastiveLoss(
+        clustering_results_dir=CLUSTERING_RESULTS_DIR
+    )
 
     logger.info("Creating dataset")
     dataset = MultiFamilyConformerDataset(
@@ -443,7 +786,16 @@ def main(args):
         logger.info(f"Resumed from epoch {start_epoch}")
 
     logger.info("Starting training process")
-    trained_model = train_equicat(model, dataset, device, args.embedding_type, args.scheduler, args, start_epoch)
+    trained_model = train_equicat(
+        model=model, 
+        dataset=dataset, 
+        device=device, 
+        embedding_type=args.embedding_type, 
+        scheduler_type=args.scheduler, 
+        args=args, 
+        start_epoch=start_epoch,
+        contrastive_loss_fn=contrastive_loss_fn 
+    )
     logger.info("Training process completed")
 
     # Final model is already saved in train_equicat function
