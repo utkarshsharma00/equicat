@@ -17,7 +17,7 @@ Key features:
 
 Author: Utkarsh Sharma
 Version: 1.0.0
-Date: 10-04-2024 (MM-DD-YYYY) 
+Date: 11-15-2024 (MM-DD-YYYY) 
 License: MIT
 
 Dependencies:
