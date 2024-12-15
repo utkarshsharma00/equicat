@@ -3,7 +3,7 @@ Conformer Ensemble Embedding Combiner
 
 This module provides advanced functionality for combining embeddings from multiple
 conformers of a molecule into a single representation. It supports flexible
-output configurations from the EQUICAT model, including scalar-only, vector-only,
+output configurations from the EquiCat model, including scalar-only, vector-only,
 and combined scalar-vector outputs.
 
 Key components:
@@ -14,16 +14,17 @@ Key components:
 5. ConformerEnsembleEmbeddingCombiner: Orchestrates multiple embedding combination methods.
 6. Utility functions for processing and visualizing embeddings.
 
-New functionalities in v3.1.1:
-1. detect_scalars_vectors(): Improved detection and logging of scalar and vector dimensions 
-   from irreps string.
-2. process_molecule_conformers(): New function to process and average embeddings for all 
-   conformers of a single molecule.
-3. Enhanced error handling and logging throughout the module.
+Key Features:
+1. Advanced activation functions (SiLU) for better gradient flow
+2. Comprehensive type hints and documentation
+3. Flexible handling of scalar and vector inputs
+4. GPU-accelerated processing support
+5. Multiple embedding combination strategies
+6. Visualization tools for embedding analysis
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -47,6 +48,12 @@ Usage:
     visualize_embeddings(results)
 
 Change Log:
+- v4.0.0 (12-14-2024):
+  * Major version bump to align with EquiCat ecosystem
+  * Replaced ReLU with SiLU activation functions for improved performance
+  * Enhanced documentation and type hints
+  * Standardized random seed initialization
+  * Improved error handling and logging
 - v3.1.1 (09-10-2024):
   * Improved detect_scalars_vectors() with better logging
   * Added process_molecule_conformers() for single molecule processing
@@ -360,7 +367,7 @@ class ImprovedSelfAttention(nn.Module):
         self.vector_dim = vector_dim
         total_dim = scalar_dim + vector_dim * 3
         
-        #! SiLU activation function and RMSNorm layer
+        #! RMSNorm layer
         self.attention = nn.MultiheadAttention(total_dim, num_heads) # Multi-head attention
         self.norm1 = nn.LayerNorm(total_dim) # Layer normalization 1
         self.norm2 = nn.LayerNorm(total_dim) # Layer normalization 2
