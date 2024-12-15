@@ -1,19 +1,51 @@
 """
-EQUICAT Molecule Embedding Visualizer with Family-based Coloring
+EQUICAT Molecule Embedding Visualization System
 
-This script loads molecule embeddings from a JSON file, performs PCA,
-and creates an interactive plot to visualize the embeddings, with colors
-based on molecule families.
+A comprehensive visualization system for molecular embeddings, featuring PCA transformation,
+family-based analysis, and interactive plotting capabilities. This module unifies both basic
+and family-aware visualization approaches into a single cohesive system.
 
 Key components:
-1. JSON data loading
-2. Family extraction from molecule keys
-3. PCA transformation
-4. Interactive plot generation using Plotly with family-based coloring
+1. Data Processing:
+   - JSON embedding data loading
+   - Advanced error handling
+   - Flexible path management
+   - Data validation and verification
+   
+2. Analysis Features:
+   - PCA dimensionality reduction
+   - Family extraction and grouping
+   - Similarity analysis
+   - Outlier detection
+   
+3. Visualization System:
+   - Interactive scatter plots
+   - Family-based coloring
+   - Dynamic tooltips
+   - Custom styling options
+   - Publication-ready outputs
+
+4. Quality Management:
+   - Data validation checks
+   - Error logging
+   - Debug information
+   - Performance monitoring
+
+Key Features:
+1. Unified embedding visualization
+2. Family-aware analysis
+3. Interactive data exploration
+4. Publication-ready plots
+5. Comprehensive error handling
+6. Flexible output formats
+7. Advanced hover information
+8. Custom colormap support
+9. Data validation system
+10. Performance optimization
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-15-2024
 License: MIT
 
 Dependencies:
@@ -23,7 +55,36 @@ Dependencies:
     - pandas (>=1.0.0)
 
 Usage:
-    python visualize_molecule_embeddings_family.py
+    python visualize_molecule_embeddings.py
+
+Change Log:
+- v4.0.0 (12-15-2024):
+  * Unified basic and family-aware visualization
+  * Added comprehensive data validation
+  * Enhanced error handling system
+  * Improved memory efficiency
+  * Added performance monitoring
+  * Enhanced plot customization
+  * Removed redundant plotting functions
+- v3.0.0 (10-03-2024):
+  * Added family-based coloring
+  * Enhanced interactive features
+  * Improved data processing
+- v2.0.0 (09-11-2024):
+  * Added basic PCA visualization
+  * Implemented interactive plotting
+- v1.0.0 (08-01-2024):
+  * Initial implementation
+
+ToDo:
+- Add t-SNE and UMAP alternatives
+- Implement clustering visualization
+- Add statistical analysis tools
+- Support for larger datasets
+- Add export options
+- Real-time visualization
+- Interactive legend controls
+- Custom annotation support
 """
 
 import json
@@ -34,8 +95,8 @@ import pandas as pd
 import re
 
 # Constants
-INPUT_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/final_molecule_embeddings.json"
-OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/embeddings_pca.html"
+INPUT_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/final_molecule_embeddings.json"
+OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/embeddings_pca.html"
 
 def load_embeddings(file_path):
     """
