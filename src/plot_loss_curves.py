@@ -1,48 +1,84 @@
 """
-EQUICAT Plot Loss Curves
+EquiCat Loss Curves Visualization
 
-This script generates interactive loss curves for analyzing the training process of the EQUICAT model. 
-It focuses on creating a combined plot of average loss and learning rate across training epochs.
+This script provides interactive visualization tools for analyzing EquiCat training metrics,
+combining loss curves and learning rate plots for comprehensive training analysis. It features
+robust data extraction from logs and generates publication-quality interactive plots.
 
 Key components:
-1. Data extraction from training log file
-2. Interactive plot generation using Plotly
-3. Dual-axis visualization for loss and learning rate
+1. Data Processing:
+   - Advanced log parsing with regex patterns
+   - Robust error handling for malformed logs
+   - Multi-metric data extraction
+   - Time series data validation
 
-New functionality in v3.0.0:
-- plot_average_loss_and_learning_rate(): Creates a combined plot of average loss and learning rate
-  across epochs, providing a comprehensive view of the training progress.
+2. Visualization Features:
+   - Interactive dual-axis plotting
+   - Combined loss and learning rate visualization
+   - Dynamic hover information
+   - Responsive layout design
+   - Custom plot styling options
+
+3. Output Management:
+   - HTML report generation
+   - Flexible file path handling
+   - Directory structure validation
+   - Error logging and debugging
+
+Key Features:
+1. Dual-axis visualization system
+2. Interactive data exploration
+3. Comprehensive error handling
+4. Flexible output formatting
+5. Robust data extraction
+6. Publication-ready plots
+7. Advanced hover tooltips
+8. Customizable plot styling
+9. Directory management
+10. Debug information logging
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-    - plotly (>=5.0.0)
-    - pandas (>=1.0.0)
+- plotly (>=5.0.0)
+- numpy (>=1.20.0)
+- pandas (>=1.0.0)
 
 Usage:
     python plot_loss_curves.py
 
-Change Log:
-    - v3.0.0: Implemented plot_average_loss_and_learning_rate()
-              Removed other plotting functions to focus on average loss and learning rate
-    - v2.0.0: (Version jump to align with major changes)
-    - v1.5.0: Added combined plot for Total, Positive, and Negative losses per epoch
-    - v1.4.0: Ensured the batch_plots directory is completely cleared and recreated for each run
-    - v1.3.0: Refactored to handle large datasets and organize output in subdirectories
-    - v1.2.0: Added individual batch loss plots across epochs
-    - v1.1.0: Added average batch loss across epochs plot
-    - v1.0.0: Initial implementation with average loss per epoch plot
+For detailed usage instructions, please refer to the README.md file.
 
-TODO:
-    - Implement command-line arguments for configurable input/output paths
-    - Add option to export plots as static images (PNG/SVG)
-    - Implement error handling for missing or corrupted log files
-    - Add functionality to compare multiple training runs
-    - Implement smoothing option for loss curves
-    - Add option to customize plot appearance (colors, line styles, etc.)
+Change Log:
+- v4.0.0 (12-14-2024):
+  * Standardized module naming and structure
+  * Enhanced error handling and logging
+  * Improved path management
+  * Added comprehensive data validation
+  * Enhanced plot customization options
+  * Added debug information system
+- v3.0.0 (09-10-2024):
+  * Added plot_average_loss_and_learning_rate()
+  * Removed legacy plotting functions
+  * Streamlined visualization process
+- v2.0.0 (08-15-2024):
+  * Major architecture refactoring
+  * Added combined plotting capabilities
+- v1.0.0 (07-01-2024):
+  * Initial implementation with basic plotting
+
+ToDo:
+- Add command-line argument support
+- Implement static image export (PNG/SVG)
+- Add multi-run comparison features
+- Implement curve smoothing options
+- Add custom styling parameters
+- Enhance error handling for corrupt logs
+- Add automated plot annotation
+- Implement interactive legend controls
 """
 
 import plotly.graph_objects as go
@@ -55,8 +91,8 @@ np.set_printoptions(precision=15)
 np.random.seed(0)
 
 # Constants
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/develop_op/loss_curves"
-LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/develop_op"
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large/"
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large/"
 LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
 
 def plot_average_loss_and_learning_rate(log_file):
