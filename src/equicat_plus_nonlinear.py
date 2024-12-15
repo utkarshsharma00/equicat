@@ -2,66 +2,99 @@
 EQUICAT Plus Non-Linear Readout Module
 
 This module significantly enhances the EQUICAT model by introducing a flexible,
-customizable non-linear readout layer. It addresses the limitations of previous
-versions by supporting a wide range of output configurations, including scalar-only,
-vector-only, and combined scalar-vector outputs.
+customizable non-linear readout layer. It provides advanced irreps handling, 
+adaptive processing pathways, and comprehensive debugging capabilities.
 
-Key features and improvements:
-1. CustomNonLinearReadout: A versatile readout layer that dynamically adapts to
-   different input and output irreducible representations (irreps).
-2. Flexible Output Configuration: Supports various output types (scalar-only,
-   vector-only, combined) through configurable output irreps.
-3. Enhanced Debugging: Comprehensive logging of shapes and irreps at each stage
-   of the forward pass for easier troubleshooting.
-4. Improved Equivariance: Maintains equivariance throughout the network, even
-   with complex non-linear transformations.
-5. Customizable Architecture: Allows for easy modification of hidden layer
-   sizes and activation functions.
-6. Multi-Interaction Support: Properly handles outputs from EQUICAT models with
-   multiple interaction layers.
+Key components:
+1. Architecture Design:
+   - CustomNonLinearReadout for flexible tensor processing
+   - Adaptive layer construction based on input types
+   - Multi-level feature transformation pipeline
+   - Equivariant non-linear activation handling
 
-This version represents a major overhaul in the way the NonLinearReadoutBlock
-is created and integrated with the EQUICAT model, offering significantly
-improved flexibility and performance.
+2. Processing Features:
+   - Dynamic irreps analysis and handling
+   - Type-aware tensor transformations
+   - Scalar/vector separation and recombination
+   - Multi-interaction support
+   - Comprehensive shape tracking
+
+3. Integration Features:
+   - Seamless EQUICAT model integration
+   - Automatic irreps compatibility checking
+   - Device management
+   - Memory optimization
+
+Key Features:
+1. Dynamic irreps handling for flexible input processing
+2. Automatic scalar/vector feature detection
+3. Configurable hidden layer architecture
+4. Comprehensive shape tracking and validation
+5. Advanced equivariant transformations
+6. Flexible activation function support
+7. Multiple interaction layer compatibility
+8. Detailed debug logging system
+9. Memory-efficient tensor handling
+10. Device-agnostic computation
 
 Author: Utkarsh Sharma
-Version: 2.0.0
-Date: 10-27-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-    - torch (>=1.9.0)
-    - e3nn (>=0.4.0)
-    - equicat (custom package)
+- torch (>=1.9.0)
+- e3nn (>=0.4.0)
+- equicat (custom package)
+- numpy (>=1.20.0)
 
 Usage:
+    # Configure model
     model_config = {
-        'hidden_irreps': o3.Irreps("32x0e + 32x1o"),
+        'hidden_irreps': o3.Irreps("256x0e + 256x1o"),
         'num_interactions': 2,
         'gate': torch.nn.functional.silu,
-        # ... other config options ...
     }
+    
+    # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
+    
+    # Forward pass
     output = model(input_dict)
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v2.0.0 (10-03-2024):
-        * Added adaptive input type detection and handling
-        * Fixed multi-interaction layer support
-        * Implemented type preservation through network layers
-        * Enhanced shape consistency checks
-        * Improved error handling and debugging
-    - v1.0.0 (07-07-2024):
-        * Initial implementation of CustomNonLinearReadout
+- v4.0.0 (12-14-2024):
+  * Major version bump to align with EquiCat ecosystem
+  * Implemented dynamic irreps analysis and handling
+  * Added comprehensive type validation
+  * Enhanced multi-interaction layer support
+  * Improved memory efficiency
+  * Added detailed shape tracking
+  * Enhanced debug logging system
+  * Optimized tensor operations
+  * Improved documentation
+- v3.0.0 (09-10-2024):
+  * Complete redesign of CustomNonLinearReadout
+  * Added flexible irreps support
+  * Enhanced debugging features
+- v2.0.0 (08-01-2024):
+  * Added GPU support
+  * Enhanced debug printing
+- v1.0.0 (07-07-2024):
+  * Initial implementation
 
-TODO:
-    - Optimize memory usage for large molecular systems
-    - Implement multi-GPU support for distributed training
-    - Add comprehensive test suite for different input configurations
-    - Enhance logging and visualization of internal representations
+ToDo:
+- Implement gradient checkpointing for memory efficiency
+- Add support for custom layer architectures
+- Enhance shape validation system
+- Implement automated architecture validation
+- Add performance profiling tools
+- Improve tensor operation efficiency
+- Add support for distributed training
+- Enhance irreps compatibility checking
 """
 
 import torch
