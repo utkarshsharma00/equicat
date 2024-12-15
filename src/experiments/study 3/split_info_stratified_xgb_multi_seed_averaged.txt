@@ -1,0 +1,39 @@
+Aggregated Analysis Report: stratified_xgb_multi_seed
+==================================================
+
+Random Seeds Used:
+--------------------
+Seed 1: 715105
+Seed 2: 349129
+Seed 3: 101191
+
+Model Performance (averaged over seeds):
+--------------------
+Training R²: 0.93812 ± 0.00220
+Test R²: 0.89983 ± 0.00581
+Training MAE: 0.12138 ± 0.00324 kcal/mol
+Test MAE: 0.15334 ± 0.00694 kcal/mol
+
+Individual Seed Results:
+--------------------
+
+Seed 715105:
+Training R²: 0.93863
+Test R²: 0.89769
+Training MAE: 0.11967 kcal/mol
+Test MAE: 0.15569 kcal/mol
+Training Time: 6306.82 seconds
+
+Seed 349129:
+Training R²: 0.93521
+Test R²: 0.90778
+Training MAE: 0.12592 kcal/mol
+Test MAE: 0.14391 kcal/mol
+Training Time: 6322.32 seconds
+
+Seed 101191:
+Training R²: 0.94051
+Test R²: 0.89403
+Training MAE: 0.11856 kcal/mol
+Test MAE: 0.16043 kcal/mol
+Training Time: 6236.86 seconds
