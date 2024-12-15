@@ -1,37 +1,103 @@
 """
-data_loader.py
+EquiCat Molecule Data Loader and Processor
 
-This module provides a custom dataset class for handling multiple families of molecular conformers.
-It is designed to work with the EQUICAT model and supports contrastive learning by providing
-samples that include molecules from different families. This version includes PyTorch Profiler
-for performance analysis and tracing.
+This module provides comprehensive functionality for loading and processing molecular conformer data
+for use with the EquiCat model. It implements multi-family support, efficient sampling strategies,
+and performance profiling, with GPU acceleration and advanced tracing capabilities.
 
-Key features:
-1. Supports multiple conformer libraries (molecule families)
-2. Processes all molecules within each family
-3. Implements efficient sampling across all molecule families for each batch
-4. Selects diverse conformers using K-means clustering
-5. Provides family information for each molecule, enabling contrastive learning
-6. Supports exclusion of specific molecules
-7. Implements batch sampling for training
-8. Comprehensive logging for debugging and monitoring
-9. Performance profiling using PyTorch Profiler
-10. Tracing and exporting profiling results to JSON
+Key components:
+1. MultiFamilyConformerDataset: Advanced dataset class for handling multiple conformer families
+2. Smart Sampling: Cross-family sampling mechanism for contrastive learning
+3. K-means Conformer Selection: Intelligent selection of diverse conformers 
+4. Performance Profiling: Built-in PyTorch profiling and tracing
+5. Family-based Organization: Structured handling of molecular families
+6. Comprehensive Logging: Detailed tracking of data processing
+7. Memory Management: Efficient handling of large molecular datasets
+8. Chrome Tracing: Performance visualization and analysis tools
+
+Key Features:
+1. Multi-family data handling with balanced sampling
+2. Performance optimization with PyTorch profiling 
+3. K-means based conformer selection
+4. Comprehensive logging and error handling
+5. GPU acceleration support
+6. Cross-family contrastive learning support
+7. Efficient memory management
+8. Flexible molecule exclusion
+9. Advanced profiling and tracing
+10. Chrome trace export for performance analysis
 
 Author: Utkarsh Sharma
-Version: 1.1.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-- torch
-- numpy
-- molli
-- mace
-- torch_geometric
-- sklearn
-- logging
+- torch (>=1.9.0)
+- numpy (>=1.20.0)
+- molli (>=0.1.0)
+- mace (custom package)
+- torch_geometric (>=2.0.0)
+- sklearn (>=0.24.0)
+- torch.profiler
 - json
+
+Usage:
+   from data_loader import MultiFamilyConformerDataset
+   
+   # Initialize conformer libraries
+   conformer_libraries = {
+       "family1": ml.ConformerLibrary(path1),
+       "family2": ml.ConformerLibrary(path2)
+   }
+   
+   # Create dataset with multiple families
+   dataset = MultiFamilyConformerDataset(
+       conformer_libraries=conformer_libraries,
+       cutoff=CUTOFF,
+       sample_size=SAMPLE_SIZE,
+       max_conformers=MAX_CONFORMERS,
+       exclude_molecules=EXCLUDED_MOLECULES
+   )
+   
+   # Iterate through samples
+   for sample in dataset:
+       # Process sample data for training
+
+For detailed usage instructions, please refer to the README.md file.
+
+Change Log:
+- v4.0.0 (12-14-2024):
+ * Major architectural change to support multiple molecular families
+ * Implemented PyTorch profiling and tracing for performance monitoring
+ * Added cross-family sampling for contrastive learning
+ * Enhanced logging with comprehensive event tracking
+ * Improved conformer selection with K-means clustering
+ * Removed conformer padding functionality
+ * Changed from single to multi-library handling
+ * Restructured dataset class for family-based organization
+ * Added performance profiling with Chrome trace export
+- v3.0.0 (09-10-2024):
+ * Added conformer capping with K-means selection
+ * Implemented sample-based processing
+ * Introduced direct molecule handling
+ * Updated logging for better tracking
+- v2.0.0 (08-01-2024):
+ * Added GPU support and optimization
+ * Enhanced memory management
+ * Added conformer padding capability (removed in v4.0.0)
+- v1.0.0 (07-01-2024):
+ * Initial release with basic conformer handling
+
+ToDo:
+- Implement adaptive sampling strategies for better family balance
+- Add support for custom conformer selection methods
+- Optimize memory usage for very large molecular systems
+- Add caching mechanism for frequently accessed data
+- Implement advanced data augmentation techniques
+- Add comprehensive test suite for all components
+- Enhance profiling visualization tools
+- Support for parallel data loading
 """
 
 import random
@@ -48,19 +114,32 @@ from collections import defaultdict
 from torch.profiler import profile, record_function, ProfilerActivity
 import json
 
+torch.set_default_dtype(torch.float64)
+np.set_printoptions(precision=15)
+np.random.seed(42)
+
+# Logger setup
 logger = logging.getLogger('data_loader')
 
 # Constants
 CUTOFF = 6.0
-MAX_CONFORMERS = 8
-SAMPLE_SIZE = 10
-# LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/data_loader.log"
-# PROFILE_OUTPUT_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/develop_op/profiler_output.json"
-LOG_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/data_loader_profiler.log"
-PROFILE_OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/develop_op/profiler_output.json"
-
+MAX_CONFORMERS = 10
+SAMPLE_SIZE = 30
+LOG_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/epoch_large/data_loader.log"
+PROFILE_OUTPUT_FILE = "/eagle/FOUND4CHEM/utkarsh/project/equicat/epoch_large/profiler_output.json"
+# LOG_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/data_loader_profiler.log"
+# PROFILE_OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/profiler_output.json"
 
 def setup_logging(log_file):
+    """
+    Set up logging configuration for the data loader.
+
+    Args:
+        log_file (str): Path to the log file where messages will be written.
+
+    Returns:
+        None
+    """
     logger.setLevel(logging.INFO)
     handler = logging.FileHandler(log_file)
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -70,6 +149,22 @@ setup_logging(LOG_FILE)
 logger.info("Logging initialized for data_loader")
 
 class MultiFamilyConformerDataset(Dataset):
+    """
+    A custom dataset class for handling multiple families of molecular conformers.
+    Implements sample-based processing and supports contrastive learning across families.
+
+    Args:
+        conformer_libraries (Dict[str, ml.ConformerLibrary]): Dictionary mapping family names to conformer libraries.
+        cutoff (float): Cutoff distance for atomic interactions.
+        sample_size (int): Number of molecules per sample.
+        max_conformers (int): Maximum number of conformers to select per molecule.
+        exclude_molecules (Optional[List[str]]): List of molecule keys to exclude.
+        num_families (Optional[int]): Number of families to use (if None, uses all).
+        ensembles_per_family (Optional[int]): Number of molecules to use per family (if None, uses all).
+
+    Returns:
+        None
+    """
     def __init__(
         self,
         conformer_libraries: Dict[str, ml.ConformerLibrary],
@@ -130,6 +225,16 @@ class MultiFamilyConformerDataset(Dataset):
             logger.info(f"Total samples: {self.total_samples}, Sample size: {sample_size}")
 
     def _preselect_conformers(self) -> Dict[str, List[int]]:
+        """
+        Preselect diverse conformers for each molecule using K-means clustering.
+        Improves efficiency by doing selection once during initialization.
+
+        Args:
+            None (uses class attributes)
+
+        Returns:
+            Dict[str, List[int]]: Dictionary mapping molecule keys to lists of selected conformer indices.
+        """
         with record_function("MultiFamilyConformerDataset._preselect_conformers"):
             logger.info("Preselecting diverse conformers")
             selected_conformers = {}
@@ -146,6 +251,17 @@ class MultiFamilyConformerDataset(Dataset):
 
     @staticmethod
     def _select_diverse_conformers(conformers: List[np.ndarray], max_conformers: int) -> List[int]:
+        """
+        Select diverse conformers from a set using K-means clustering.
+        Chooses conformers closest to cluster centers.
+
+        Args:
+            conformers (List[np.ndarray]): List of conformer coordinates.
+            max_conformers (int): Maximum number of conformers to select.
+
+        Returns:
+            List[int]: Indices of selected diverse conformers.
+        """
         with record_function("MultiFamilyConformerDataset._select_diverse_conformers"):
             n_conformers = len(conformers)
             if n_conformers <= max_conformers:
@@ -165,6 +281,16 @@ class MultiFamilyConformerDataset(Dataset):
             return selected_indices
 
     def get_molecule_data(self, key, use_all_conformers=False):
+        """
+        Get atomic data for a specific molecule.
+
+        Args:
+            key (str): Molecule identifier.
+            use_all_conformers (bool): If True, uses all conformers instead of preselected ones.
+
+        Returns:
+            List[Data]: List of PyTorch Geometric Data objects for each conformer.
+        """
         with record_function("MultiFamilyConformerDataset.get_molecule_data"):
             family = self.molecule_to_family[key]
             library = self.conformer_libraries[family]
@@ -198,6 +324,16 @@ class MultiFamilyConformerDataset(Dataset):
             return atomic_data_list
     
     def _sample_across_families(self) -> List[str]:
+        """
+        Sample molecules across different families for balanced representation.
+        Ensures each sample contains molecules from multiple families.
+
+        Args:
+            None (uses class attributes)
+
+        Returns:
+            List[str]: List of selected molecule keys.
+        """
         with record_function("MultiFamilyConformerDataset._sample_across_families"):
             sampled_molecules = []
             families = list(self.family_keys.keys())
@@ -219,6 +355,17 @@ class MultiFamilyConformerDataset(Dataset):
             return sampled_molecules
 
     def get_next_sample(self) -> Optional[List[Tuple[List[Data], str, str]]]:
+        """
+        Get the next sample of molecules for processing.
+
+        Args:
+            None (uses class state)
+
+        Returns:
+            Optional[List[Tuple[List[Data], str, str]]]: 
+                List of tuples containing (atomic_data_list, molecule_key, family_name),
+                or None if all samples have been processed.
+        """
         with record_function("MultiFamilyConformerDataset.get_next_sample"):
             if self.current_sample >= self.total_samples:
                 logger.info("All samples processed, returning None")
@@ -262,6 +409,15 @@ class MultiFamilyConformerDataset(Dataset):
             return sample_data
 
     def reset(self):
+        """
+        Reset the dataset for a new epoch, shuffling family keys.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
         with record_function("MultiFamilyConformerDataset.reset"):
             logger.info("Resetting dataset for a new epoch")
             self.current_sample = 0
@@ -281,6 +437,15 @@ class MultiFamilyConformerDataset(Dataset):
             yield sample
 
 def compute_avg_num_neighbors(batch):
+    """
+    Compute the average number of neighbors for atoms in a batch.
+
+    Args:
+        batch (Data): PyTorch Geometric batch object containing edge indices.
+
+    Returns:
+        float: Average number of neighbors per atom.
+    """
     with record_function("compute_avg_num_neighbors"):
         _, receivers = batch.edge_index
         _, counts = torch.unique(receivers, return_counts=True)
@@ -288,6 +453,15 @@ def compute_avg_num_neighbors(batch):
         return avg_num_neighbors.item()
 
 def get_unique_atomic_numbers(conformer_libraries: Dict[str, ml.ConformerLibrary]) -> List[int]:
+    """
+    Get a sorted list of unique atomic numbers across all conformer libraries.
+
+    Args:
+        conformer_libraries (Dict[str, ml.ConformerLibrary]): Dictionary of conformer libraries.
+
+    Returns:
+        List[int]: Sorted list of unique atomic numbers.
+    """
     with record_function("get_unique_atomic_numbers"):
         unique_atomic_numbers = set()
         for family, library in conformer_libraries.items():
@@ -298,19 +472,29 @@ def get_unique_atomic_numbers(conformer_libraries: Dict[str, ml.ConformerLibrary
         return sorted(list(unique_atomic_numbers))
 
 def main():
+    """
+    Main function to demonstrate and test the data loader functionality.
+    Sets up profiling, initializes dataset, and processes test samples.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
     logger.info("Starting main function for testing data_loader.py")
 
     conformer_libraries = {
 
-        "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
-        "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
-        "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiol_confs.clib"),
-        "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
+        # "family1": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib"),
+        # "family2": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib"),
+        # "family3": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/thiols.clib"),
+        # "family4": ml.ConformerLibrary("/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"),
 
-        # "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
-        # "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
-        # "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiol_confs.clib"),
-        # "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
+        "family1": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib"),
+        "family2": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib"),
+        "family3": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib"),
+        "family4": ml.ConformerLibrary("/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib"),
     }
     
     excluded_molecules = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
