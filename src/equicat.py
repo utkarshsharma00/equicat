@@ -1,49 +1,99 @@
 """
-EQUICAT Model Implementation
+EquiCat Model Implementation
 
-This module implements the EQUICAT model, a neural network architecture designed for 
+This module implements the EquiCat model, a neural network architecture designed for 
 equivariant learning on molecular systems. It leverages the MACE framework to create 
-a model that respects the symmetries inherent in molecular data.
+a model that respects the symmetries inherent in molecular data while providing 
+efficient geometric message passing and feature aggregation.
 
-Key features:
-1. GPU acceleration with CUDA support
-2. Equivariant processing of molecular geometries
-3. Handling of variable-sized molecular inputs
-4. Incorporation of spherical harmonics for angular information
-5. Use of radial basis functions for distance information
-6. Implementation of symmetric contractions for feature aggregation
-7. Multiple interaction and product layers for deep learning
-8. Extensive debug printing throughout the forward pass
+Key components:
+1. Model Architecture:
+   - Neural network built on MACE framework
+   - Multiple interaction and product layers
+   - Equivariant message passing mechanism
+   - Geometric feature processing pipeline
 
-The EQUICAT class encapsulates the entire model, providing a forward method that 
-processes input molecular data through various stages of the network.
+2. Processing Stages:
+   - Node embedding and attribute computation
+   - Radial basis function generation
+   - Spherical harmonics computation
+   - Geometric message passing
+   - Feature aggregation and transformation
+
+3. Error Handling:
+   - Robust atomic number processing
+   - Device management and tensor type checking
+   - Shape consistency verification
+   - Debug logging throughout forward pass
+
+Key Features:
+1. Equivariant molecular geometry processing
+2. Multi-layer message passing architecture
+3. Configurable interaction depth
+4. GPU acceleration support
+5. Comprehensive shape tracking
+6. Flexible atomic number handling
+7. Built-in error recovery
+8. Debug-friendly tensor tracking
+9. Device-agnostic computation
+10. Memory-efficient processing
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-    - torch (>=1.9.0)
-    - mace (custom package)
-    - torch_geometric (>=2.0.0)
+- torch (>=1.9.0)
+- numpy (>=1.20.0)
+- mace (custom package)
+- torch_geometric (>=2.0.0)
 
 Usage:
+    # Initialize model with configuration
     model = EQUICAT(model_config, z_table)
+    
+    # Prepare input dictionary
+    input_dict = {
+        'positions': positions,          # [num_atoms, 3]
+        'atomic_numbers': atomic_numbers, # [num_atoms]
+        'edge_index': edge_index        # [2, num_edges]
+    }
+    
+    # Forward pass
     output = model(input_dict)
 
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
-    - v2.0.0: Added GPU support and ensured compatibility with updated equicat_plus_nonlinear.py and train.py
-    - v1.2.0: Added extensive debug printing and sanity checks throughout the forward pass
-    - v1.1.0: Added support for multiple interaction and product layers
-    - v1.0.0: Initial implementation of EQUICAT model
+- v4.0.0 (12-14-2024):
+  * Major version bump to align with EquiCat ecosystem
+  * Major refactoring for improved modularity
+  * Enhanced error handling and recovery
+  * Improved shape consistency checking
+  * Added comprehensive debug logging
+  * Standardized tensor type management
+  * Memory optimization for large systems
+  * Enhanced device management
+  * Improved documentation and type hints
+- v2.0.0 (09-10-2024):
+  * Added GPU support
+  * Added compatibility updates
+- v1.1.0 (08-15-2024):
+  * Added multiple interaction layers
+  * Enhanced debug printing
+- v1.0.0 (07-01-2024):
+  * Initial implementation
 
-TODO:
-    - Implement checkpointing for large models
-    - Add support for custom activation functions
-    - Optimize memory usage for processing large molecular systems
+ToDo:
+- Implement gradient checkpointing for memory efficiency
+- Add support for custom activation functions
+- Implement model parameter serialization
+- Add support for dynamic interaction depth
+- Enhance debug visualization tools
+- Add model architecture validation
+- Implement memory usage profiling
+- Add support for distributed training
 """
 
 import torch
