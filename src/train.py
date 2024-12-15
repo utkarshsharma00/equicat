@@ -1,11 +1,105 @@
 """
-train.py
+EquiCat Model Training Pipeline
+
+This module implements an advanced training pipeline for the EquiCat model, featuring 
+cluster-aware contrastive learning, multi-family handling, and comprehensive molecule 
+analysis. It includes molecular clustering, loss computation, and detailed training 
+progress tracking.
+
+Key components:
+1. Training Architecture:
+   - Cluster-aware contrastive learning mechanism
+   - Multi-family molecule handling
+   - Advanced embedding processing
+   - Hierarchical similarity computation
+   - Gradient management and optimization
+   - Comprehensive checkpoint system
+
+2. Clustering Features:
+   - Family-scoped molecule clustering
+   - Hierarchical relationship weighting
+   - Cluster-based similarity metrics
+   - Adaptive cluster processing
+   - Dynamic cluster validation
+
+3. Learning Components:
+   - Multi-stage learning rate scheduling
+   - Advanced gradient clipping
+   - Early stopping with patience
+   - Loss computation with cluster awareness
+   - Detailed progress tracking
+   - Memory-efficient batch processing
+
+Key Features:
+1. Cluster-aware contrastive learning
+2. Family-based molecular organization
+3. Hierarchical similarity computation
+4. Comprehensive logging system
+5. Multiple scheduler options
+6. Advanced checkpoint management
+7. Gradient monitoring and control
+8. Memory optimization
+9. Multi-family support
+10. Cluster-based training
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 10-03-2024 (MM-DD-YYYY)
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
+
+Dependencies:
+- torch (>=1.9.0)
+- numpy (>=1.20.0)
+- e3nn (>=0.4.0)
+- mace (custom package)
+- molli (custom package)
+- sklearn (>=0.24.0)
+
+Usage:
+    python train.py [--embedding_type {mean_pooling,deep_sets,self_attention,
+                    improved_deep_sets,improved_self_attention,all}]
+                   [--scheduler {plateau,step,cosine,cosine_restart,onecycle}]
+                   [--num_families NUM_FAMILIES]
+                   [--ensembles_per_family ENSEMBLES_PER_FAMILY]
+                   [--resume_from_checkpoint CHECKPOINT_PATH]
+
+For detailed usage instructions, please refer to the README.md file.
+
+Change Log:
+- v4.0.0 (12-14-2024):
+  * Added cluster-aware contrastive loss
+  * Implemented family-scoped molecule clustering
+  * Added molecular relationship weighting
+  * Enhanced batch processing with cluster awareness
+  * Improved training stability
+  * Added detailed relationship logging
+  * Removed simple contrastive loss
+  * Removed conformer padding functionality
+  * Restructured training pipeline
+  * Removed basic sampling approach
+- v3.1.0 (09-11-2024):
+  * Added final embeddings saving
+  * Enhanced logging capabilities
+- v3.0.0 (09-01-2024):
+  * Added multi-molecule processing
+  * Initial contrastive learning implementation
+- v2.0.0 (08-01-2024):
+  * Added GPU support
+  * Added conformer padding (removed in v4.0.0)
+- v1.0.0 (07-01-2024):
+  * Initial implementation
+
+ToDo:
+- Implement dynamic relationship weighting
+- Add support for custom clustering metrics
+- Enhance memory efficiency for large datasets
+- Implement automated hyperparameter tuning
+- Add support for custom relationship definitions
+- Enhance visualization of cluster relationships
+- Implement distributed training support
+- Add comprehensive testing framework
 """
+
 import torch
 import torch.nn.functional as F
 import logging
@@ -33,6 +127,7 @@ torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
 np.random.seed(42)
 
+# Logger setup
 logger = logging.getLogger('train')
 
 # Constants
@@ -55,12 +150,21 @@ SAMPLE_SIZE = 30
 MAX_CONFORMERS = 10
 CUTOFF = 6.0
 LEARNING_RATE = 1e-3
-EPOCHS = 5
+EPOCHS = 500
 GRADIENT_CLIP_VALUE = 1.0
-CHECKPOINT_INTERVAL = 10
+CHECKPOINT_INTERVAL = 25
 EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
 
 def setup_logging(log_file):
+    """
+    Set up logging configuration for the trainig.
+
+    Args:
+        log_file (str): Path to the log file where messages will be written.
+
+    Returns:
+        None
+    """
     logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(log_file, mode='w')
     console_handler = logging.StreamHandler(sys.stdout)
@@ -71,10 +175,31 @@ def setup_logging(log_file):
     logger.addHandler(console_handler)
 
 def get_lr(optimizer):
+    """
+    Gets current learning rate from optimizer.
+
+    Args:
+        optimizer (torch.optim.Optimizer): The optimizer
+
+    Returns:
+        float: Current learning rate
+    """
     for param_group in optimizer.param_groups:
         return param_group['lr']
 
 def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
+    """
+    Creates learning rate scheduler based on specified type.
+
+    Args:
+        scheduler_type (str): Type of scheduler to use
+        optimizer (torch.optim.Optimizer): The optimizer to schedule
+        num_epochs (int): Total number of epochs
+        steps_per_epoch (int): Number of steps per epoch
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: Configured learning rate scheduler
+    """
     if scheduler_type == 'cosine':
         return CosineAnnealingLR(optimizer, T_max=steps_per_epoch)
     elif scheduler_type == 'cosine_restart':
@@ -89,6 +214,16 @@ def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
         raise ValueError(f"Unknown scheduler type: {scheduler_type}")
 
 def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
+    """
+    Calculates average number of neighbors per atom and finds unique atomic numbers.
+
+    Args:
+        dataset (MultiFamilyConformerDataset): Dataset to analyze
+        device (torch.device): Device to perform calculations on
+
+    Returns:
+        Tuple[float, List[int]]: Average neighbors per atom and list of unique atomic numbers
+    """
     logger.info("Calculating average neighbors and unique atomic numbers")
     total_neighbors = 0
     total_atoms = 0
@@ -108,6 +243,18 @@ def calculate_avg_num_neighbors_and_unique_atomic_numbers(dataset, device):
     return avg_neighbors, list(unique_atomic_numbers.keys())
 
 def process_sample(model, sample, device, embedding_type):
+    """
+    Processes a batch of molecules through the model to generate embeddings.
+
+    Args:
+        model (nn.Module): EQUICAT model
+        sample (List): Batch of molecule data
+        device (torch.device): Device to process on
+        embedding_type (str): Type of embedding to generate
+
+    Returns:
+        List[Tuple[torch.Tensor, str, str]]: List of (embedding, key, family) tuples
+    """
     sample_embeddings = []
     for atomic_data_list, key, family in sample:
         molecule_embeddings = []
@@ -139,10 +286,13 @@ def process_sample(model, sample, device, embedding_type):
 
 def log_gradients(model):
     """
-    Log gradient statistics for model parameters.
+    Logs statistics about gradients for model parameters.
 
     Args:
-        model (nn.Module): The model whose gradients are to be logged.
+        model (nn.Module): Model to analyze gradients for
+
+    Returns:
+        None
     """
     for name, param in model.named_parameters():
         if param.grad is not None:
@@ -152,47 +302,16 @@ def log_gradients(model):
             logger.info(f"Gradient stats for {name}:")
             logger.info(f"  Norm: {grad_norm:.6f}, Mean: {grad_mean:.6f}, Std: {grad_std:.6f}")
 
-# def compute_contrastive_loss(sample_embeddings, temperature=0.1):
-#     embeddings = []
-#     families = []
-#     for emb, _, family in sample_embeddings:
-#         embeddings.append(emb)
-#         families.append(family)
-    
-#     if len(embeddings) < 2:
-#         logging.warning(f"Not enough embeddings to compute contrastive loss. Only {len(embeddings)} embeddings available.")
-#         return torch.tensor(0.0, requires_grad=True)  # Return a dummy loss
-
-#     embeddings = torch.stack(embeddings)
-#     embeddings = F.normalize(embeddings, p=2, dim=1)
-
-#     similarity_matrix = torch.matmul(embeddings, embeddings.T) / temperature
-    
-#     labels = torch.tensor([families.index(f) for f in families], device=embeddings.device)
-    
-#     # Create mask for positive pairs
-#     pos_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
-    
-#     # We don't want to consider the similarity of a sample with itself as a positive pair
-#     pos_mask.fill_diagonal_(0)
-    
-#     # Negative mask is just the inverse of the positive mask
-#     neg_mask = 1 - pos_mask
-    
-#     # Compute loss
-#     exp_sim = torch.exp(similarity_matrix)
-    
-#     # Compute positive and negative scores
-#     pos_scores = torch.sum(exp_sim * pos_mask, dim=1)
-#     neg_scores = torch.sum(exp_sim * neg_mask, dim=1)
-    
-#     # Compute loss
-#     loss = -torch.log(pos_scores / (pos_scores + neg_scores))
-    
-#     return loss.mean()
-
 def initialize_clustering(conformer_libraries):
-    """Initialize molecular clustering before training."""
+    """
+    Initializes molecular clustering before training starts.
+
+    Args:
+        conformer_libraries (Dict[str, ConformerLibrary]): Libraries of molecular conformers
+
+    Returns:
+        None
+    """
     logger.info("Initializing molecular clustering")
     processor = MolecularClusterProcessor(
         conformer_libraries,
@@ -206,23 +325,29 @@ def initialize_clustering(conformer_libraries):
 logger = logging.getLogger(__name__)
 
 class ClusterAwareContrastiveLoss:
+    """
+    Implements cluster-aware contrastive learning with family-scoped clustering and hierarchical relationships.
+
+    Computes loss based on molecule relationships within and across families and clusters,
+    using weighted attraction/repulsion between samples.
+
+    Args:
+        clustering_results_dir (str): Directory containing clustering results files
+        weights (Optional[Dict[str, float]]): Custom weights for different relationship types:
+            - same_family_same_cluster: Weight for molecules in same family and cluster 
+            - same_family_diff_cluster: Weight for molecules in same family but different clusters
+            - diff_family: Weight for molecules from different families
+        temperature (float): Temperature parameter for scaling similarities (default: 0.25)
+
+    Returns:
+        None
+    """
     def __init__(
         self,
         clustering_results_dir: str,
         weights: Optional[Dict[str, float]] = None,
         temperature: float = 0.25,
     ):
-        """
-        Initialize cluster-aware contrastive loss with family-scoped clustering.
-        
-        Args:
-            clustering_results_dir: Directory containing clustering results
-            weights: Dictionary of weights for different relationship types:
-                - same_family_same_cluster: Weight for molecules in same family and cluster (default: 1.0)
-                - same_family_diff_cluster: Weight for molecules in same family but different clusters (default: 0.5)
-                - diff_family: Weight for molecules from different families (default: -1.0)
-            temperature: Temperature parameter for similarity scaling (default: 0.1)
-        """
         self.clustering_results_dir = clustering_results_dir
         self.temperature = temperature
         
@@ -248,7 +373,20 @@ class ClusterAwareContrastiveLoss:
         logger.info(f"Initialized loss with {len(self.molecule_clusters)} molecule mappings")
 
     def _validate_weights(self):
-        """Validate and log weight configuration."""
+        """
+        Validates weight configuration and logs analysis of relative strengths between relationship types.
+
+        Checks for required weights and validates their relationships to ensure proper hierarchical structure.
+
+        Args: 
+            None
+
+        Returns:
+            None
+
+        Raises:
+            ValueError: If required weights are missing
+        """
         required_weights = ['same_family_same_cluster', 'same_family_diff_cluster', 'diff_family']
         for weight_name in required_weights:
             if weight_name not in self.weights:
@@ -268,11 +406,16 @@ class ClusterAwareContrastiveLoss:
 
     def _load_cluster_data(self) -> Dict:
         """
-        Load and validate clustering results from file.
-        
+        Loads and validates clustering results from saved files.
+
+        Reads cluster mappings and metadata, validates data structure and format.
+
+        Args:
+            None
+
         Returns:
-            Dict containing cluster mappings and metadata
-        
+            Dict: Containing cluster mappings, family data and metadata
+
         Raises:
             FileNotFoundError: If cluster data file not found
             ValueError: If cluster data format is invalid
@@ -314,7 +457,17 @@ class ClusterAwareContrastiveLoss:
             raise ValueError(error_msg)
 
     def _create_family_scoped_clusters(self) -> Dict[str, Dict[str, Any]]:
-        """Create family-scoped cluster mappings."""
+        """
+        Creates mapping of molecules to their family-scoped clusters.
+
+        Generates unique cluster IDs scoped to each family and tracks cluster statistics.
+
+        Args:
+            None
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Mapping of molecules to their family and cluster information
+        """
         molecule_clusters = {}
         family_cluster_counts = defaultdict(int)
         
@@ -347,12 +500,13 @@ class ClusterAwareContrastiveLoss:
 
     def _compute_relationship_matrix(self, molecules: List[Tuple[str, str]]) -> torch.Tensor:
         """
-        Compute relationship matrix between molecules encoding family and cluster relationships.
-        
-        Returns tensor with values:
-            1.0: Same family, same cluster
-            0.5: Same family, different cluster
-            0.0: Different family
+        Computes relationship matrix between molecules encoding family and cluster relationships.
+
+        Args:
+            molecules (List[Tuple[str, str]]): List of (molecule_key, family) tuples
+
+        Returns:
+            torch.Tensor: Matrix of relationship weights between all molecule pairs
         """
         n = len(molecules)
         relationships = torch.zeros((n, n))
@@ -384,7 +538,16 @@ class ClusterAwareContrastiveLoss:
         return relationships
 
     def _log_batch_relationships(self, relationships: torch.Tensor, molecules: List[Tuple[str, str]]):
-        """Log detailed analysis of batch relationships."""
+        """
+        Logs detailed analysis of relationships between molecules in current batch.
+
+        Args:
+            relationships (torch.Tensor): Matrix of relationship weights
+            molecules (List[Tuple[str, str]]): List of (molecule_key, family) tuples
+
+        Returns:
+            None
+        """
         n = len(molecules)
         counts = {
             'same_family_same_cluster': 0,
@@ -416,7 +579,15 @@ class ClusterAwareContrastiveLoss:
             logger.info(f"{rel_type}: {count} pairs ({percentage:.1f}%)")
 
     def __call__(self, sample_embeddings):
-        """Compute family-scoped cluster-aware contrastive loss."""
+        """
+        Computes family-scoped cluster-aware contrastive loss for a batch of embeddings.
+
+        Args:
+            sample_embeddings (List[Tuple[torch.Tensor, str, str]]): List of (embedding, key, family) tuples
+
+        Returns:
+            torch.Tensor: Computed contrastive loss value
+        """
         embeddings = []
         molecules = []  # Store (key, family) pairs
         
@@ -477,6 +648,24 @@ class ClusterAwareContrastiveLoss:
         return loss
 
 def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch, contrastive_loss_fn):
+    """
+    Main training loop for EQUICAT model.
+
+    Args:
+        model (nn.Module): EQUICAT model
+        dataset (MultiFamilyConformerDataset): Training dataset
+        device (torch.device): Device to train on
+        embedding_type (str): Type of embedding to use
+        scheduler_type (str): Type of learning rate scheduler
+        args (argparse.Namespace): Command line arguments
+        start_epoch (int): Epoch to start/resume from
+        contrastive_loss_fn (ClusterAwareContrastiveLoss): Loss function
+
+    Returns:
+        nn.Module: Trained model
+    """
+    checkpoint_dir = f'{OUTPUT_PATH}/checkpoints'
+    os.makedirs(checkpoint_dir, exist_ok=True)
     logger.info("Starting train_equicat function")
     
     num_samples = len(dataset)
@@ -574,7 +763,7 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
     logger.info(f"Best model had a loss of {best_loss:.6f}")
     
     # Load the best model for final embeddings computation
-    best_model_path = f'{OUTPUT_PATH}/checkpoints/best_model.pt'
+    best_model_path = f'{checkpoint_dir}/best_model.pt'
     logger.info(f"Loading best model from {best_model_path}")
     model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
     logger.info("Best model loaded successfully")
@@ -640,6 +829,16 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
     return model
 
 def save_final_embeddings(embeddings, output_path):
+    """
+    Saves final molecule embeddings to JSON file.
+
+    Args:
+        embeddings (Dict[str, np.ndarray]): Molecule embeddings
+        output_path (str): Directory to save embeddings
+
+    Returns:
+        None
+    """
     embeddings_file = f'{output_path}/final_molecule_embeddings.json'
     
     serializable_embeddings = {key: emb.tolist() for key, emb in embeddings.items()}
@@ -651,6 +850,21 @@ def save_final_embeddings(embeddings, output_path):
     logger.info(f"Number of molecules with saved embeddings: {len(embeddings)}")       
 
 def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path, is_best=False):
+    """
+    Saves training checkpoint.
+
+    Args:
+        epoch (int): Current epoch number
+        model (nn.Module): Model state
+        optimizer (torch.optim.Optimizer): Optimizer state
+        scheduler (torch.optim.lr_scheduler._LRScheduler): Scheduler state
+        loss (float): Current loss value
+        output_path (str): Directory to save checkpoint
+        is_best (bool): Whether this is the best model so far
+
+    Returns:
+        None
+    """
     checkpoint = {
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
@@ -674,7 +888,16 @@ def save_checkpoint(epoch, model, optimizer, scheduler, loss, output_path, is_be
 
 
 def initialize_training(conformer_libraries, clustering_results_dir):
-    """Initialize clustering and validate results before training."""
+    """
+    Initializes clustering and validates results before training begins.
+
+    Args:
+        conformer_libraries (Dict[str, str]): Paths to conformer libraries
+        clustering_results_dir (str): Directory to save clustering results
+
+    Returns:
+        Dict: Clustering metadata
+    """
     logger.info("Initializing molecular clustering")
     
     # Create clustering processor
@@ -702,6 +925,15 @@ def initialize_training(conformer_libraries, clustering_results_dir):
     return data['metadata']
 
 def main(args):
+    """
+    Main function controlling training pipeline flow.
+
+    Args:
+        args (argparse.Namespace): Command line arguments
+
+    Returns:
+        None
+    """
     logger.info("Starting main function")
     
     setup_logging(f"{OUTPUT_PATH}/training.log")
