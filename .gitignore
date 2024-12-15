@@ -6,3 +6,5 @@ __pycache__/
 ../output/unique_atomic_numbers.npy
 ../saved models/
 bfg.jar
+epoch_large/
+science/
