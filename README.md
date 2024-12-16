@@ -1,4 +1,4 @@
-# EquiCat: An Equivariant Neural Network Architecture for Predicting Enantioselectivity in Asymmetric Catalysis
+# [EquiCat: An Equivariant Neural Network Architecture for Predicting Enantioselectivity in Asymmetric Catalysis](https://drive.google.com/file/d/1cG3APwV34jZuRNw6rlpyb1Jwp3ME4ay5/view?usp=drive_link)
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
