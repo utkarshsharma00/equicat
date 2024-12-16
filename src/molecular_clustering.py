@@ -439,13 +439,10 @@ class MolecularClusterProcessor:
             return {}
 
     def perform_clustering(self, distance_matrix: np.ndarray, fingerprints: Dict[str, np.ndarray],
-                          method: str = 'butina', n_clusters: Optional[int] = None,
-                          cutoff: float = 0.2) -> List[List[int]]:
+                      method: str = 'butina', n_clusters: Optional[int] = None,
+                      cutoff: float = 0.2) -> List[List[int]]:
         """
         Perform molecular clustering using specified method and parameters.
-
-        Implements multiple clustering approaches (Butina, K-means, hierarchical) with
-        automatic parameter selection and error handling. Includes cluster size balancing.
 
         Args:
             distance_matrix (np.ndarray): Pairwise distance matrix
@@ -469,9 +466,22 @@ class MolecularClusterProcessor:
                 # Pad or truncate to consistent length
                 max_len = max(fp.shape[0] for fp in fp_array)
                 fp_array = np.array([np.pad(fp, (0, max_len - len(fp))) if len(fp) < max_len else fp[:max_len] 
-                                   for fp in fp_array])
+                                for fp in fp_array])
             
-            if method == 'kmeans':
+            if method == 'butina':
+                # Convert distance matrix to condensed form for Butina clustering
+                condensed_dist = []
+                for i in range(len(distance_matrix)-1):
+                    for j in range(i+1, len(distance_matrix)):
+                        condensed_dist.append(distance_matrix[i,j])
+                
+                # Perform Butina clustering
+                clusters = list(Butina.ClusterData(condensed_dist, 
+                                                len(fingerprints),
+                                                cutoff,
+                                                isDistData=True))
+                
+            elif method == 'kmeans':
                 if n_clusters is None:
                     n_clusters = max(3, len(fingerprints) // 10)
                 kmeans = KMeans(n_clusters=n_clusters, random_state=2801)
@@ -881,19 +891,19 @@ class MolecularClusterProcessor:
 def main():
     """Test the clustering implementation."""
     CONFORMER_LIBRARY_PATHS = {
-        # "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
-        # "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
-        # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiols.clib",
-        # "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"
+        "family1": "/Users/utkarsh/MMLI/molli-data/00-libraries/bpa_aligned.clib",
+        "family2": "/Users/utkarsh/MMLI/molli-data/00-libraries/imine_confs.clib",
+        "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiols.clib",
+        "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib"
 
-        "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
-        "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
-        "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
-        "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
+        # "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
+        # "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
+        # "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
+        # "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
     }
     
-    # OUTPUT_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
-    OUTPUT_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
+    OUTPUT_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
+    # OUTPUT_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
     
     # Test each clustering method
     clustering_methods = ['butina', 'hierarchical', 'kmeans'] 
