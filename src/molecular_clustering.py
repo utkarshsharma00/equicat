@@ -1,42 +1,116 @@
 """
-Molecular Clustering and Analysis Module
+EquiCat Multi-Family Molecular Data Processor
 
-This module provides functionality for processing molecular conformers, generating 
-canonical SMILES representations, performing clustering analysis, and creating 
-interactive visualizations of molecular clusters.
+A comprehensive data processing system for handling multiple families of molecular conformers,
+optimized for training EquiCat models. Features advanced sampling strategies, performance
+profiling, and GPU acceleration for efficient processing of large molecular datasets.
 
-Key features:
-1. Support for multiple molecular families and conformer libraries
-2. Multiple clustering methods (Butina, hierarchical, K-means)
-3. Interactive visualization using Plotly
-4. Robust error handling and validation
-5. Detailed cluster statistics and analysis
-6. Support for high-dimensional fingerprint processing
-7. Distance matrix computation and visualization
-8. Balanced cluster size optimization
+Key components:
+1. Data Management
+   - Multi-family molecular data handling
+   - Flexible conformer selection and processing
+   - Cross-family balanced sampling
+   - Memory-efficient data organization
+
+2. Processing Features  
+   - K-means based conformer selection
+   - GPU-accelerated computations
+   - Smart batch assembly
+   - Automatic data validation
+
+3. Performance Optimization
+   - Built-in PyTorch profiling
+   - Chrome trace generation
+   - Memory usage tracking
+   - Performance analytics
+
+4. Training Support
+   - Cross-family sampling for contrastive learning
+   - Batch size optimization
+   - Family-based organization
+   - Flexible molecule exclusion
+
+Key Features:
+1. Smart molecular family handling
+2. K-means conformer selection
+3. PyTorch profiling integration 
+4. Cross-family sampling strategies
+5. Memory-efficient design
+6. Comprehensive logging
+7. Chrome trace export
+8. Family-based data organization
+9. Flexible molecule filtering
+10. GPU acceleration support
 
 Author: Utkarsh Sharma
-Version: 1.0.0
-Date: 11-15-2024 (MM-DD-YYYY) 
+Version: 4.0.0
+Date: 12-14-2024 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
-    - torch (>=1.9.0)
-    - rdkit (>=2021.03.1)  
-    - plotly (>=5.0.0)
-    - numpy (>=1.20.0)
-    - pandas (>=1.3.0)
-    - seaborn (>=0.11.0)
-    - sklearn (>=0.24.0)
-    - molli (custom package)
+- torch (>=1.9.0)
+- numpy (>=1.20.0)
+- molli (>=0.1.0)
+- mace (custom package)
+- torch_geometric (>=2.0.0)
+- sklearn (>=0.24.0)
+- torch.profiler
+- json
 
 Usage:
-    processor = MolecularClusterProcessor(
-        library_paths=CONFORMER_LIBRARY_PATHS,
-        clustering_cutoff=0.2,
-        output_dir="./clustering_results"
+    from data_loader import MultiFamilyConformerDataset
+    
+    # Initialize libraries
+    libraries = {
+        "family1": ml.ConformerLibrary("path1.clib"),
+        "family2": ml.ConformerLibrary("path2.clib")
+    }
+    
+    # Create dataset
+    dataset = MultiFamilyConformerDataset(
+        conformer_libraries=libraries,
+        cutoff=6.0,
+        sample_size=10,
+        max_conformers=8
     )
-    processor.process_all_families()
+    
+    # Process data
+    for sample in dataset:
+        process_molecular_data(sample)
+
+Change Log:
+- v4.0.0 (2024-12-14)
+    * Added multi-family support
+    * Integrated performance profiling
+    * Enhanced conformer selection
+    * Improved memory management
+    * Added Chrome tracing
+    * Removed conformer padding
+
+- v3.0.0 (2024-09-10)
+    * Implemented K-means selection
+    * Added sample-based processing
+    * Enhanced logging system
+    * Improved memory efficiency
+
+- v2.0.0 (2024-08-01)
+    * Added GPU acceleration
+    * Enhanced memory handling
+    * Added conformer padding
+
+- v1.0.0 (2024-07-01)
+    * Initial release
+    * Basic conformer handling
+
+ToDo:
+- Implement adaptive sampling
+- Add caching system
+- Enhance test coverage
+- Support parallel loading
+- Add data augmentation
+- Improve profiling tools
+- Optimize memory usage
+- Add custom selection methods
 """
 
 import torch
