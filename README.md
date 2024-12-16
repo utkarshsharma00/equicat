@@ -1,246 +1,322 @@
+# EquiCat: An Equivariant Neural Network Architecture for Predicting Enantioselectivity in Asymmetric Catalysis
 
-# EQUICAT
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
+[![Documentation Status](https://readthedocs.org/projects/equicat/badge/?version=latest)](https://equicat.readthedocs.io/en/latest/?badge=latest)
 
-## Table of Contents
-1. [Introduction](#introduction)
-2. [Installation](#installation)
-3. [Project Structure](#project-structure)
-4. [Usage](#usage)
-5. [Module Descriptions](#module-descriptions)
-   - [main.py](#mainpy)
-   - [data_loader.py](#data_loaderpy)
-   - [equicat.py](#equicatpy)
-   - [equicat_plus_nonlinear.py](#equicat_plus_nonlinearpy)
-   - [conformer_ensemble_embedding_combiner.py](#conformer_ensemble_embedding_combinerpy)
-   - [contrastive_loss.py](#contrastive_losspy)
-   - [train.py](#trainpy)
-6. [Conformer Embedding Creation Process](#conformer-embedding-creation-process)
-7. [Data Flow](#data-flow)
-8. [Contributing](#contributing)
-9. [License](#license)
+## Overview
 
-## Introduction
+EquiCat is an advanced framework for analyzing molecular conformers using equivariant neural networks. Building upon the MACE (Many-body Atomic Cluster Expansion) architecture, it processes molecular geometries while preserving their inherent symmetries. The framework introduces novel techniques for multi-family molecular analysis, cluster-aware contrastive learning, and sophisticated conformer embedding combination strategies.
 
-EQUICAT is an advanced Python-based project designed for the analysis of molecular conformers using equivariant neural networks. It builds upon the MACE (Many-body Atomic Cluster Expansion) framework to process molecular geometries while preserving their inherent symmetries.
+### Key Features
 
-The primary goal of EQUICAT is to generate and combine embeddings from multiple conformers of a molecule, providing a unified representation that can be leveraged for various downstream tasks in computational chemistry and drug discovery. By utilizing equivariant neural networks, EQUICAT ensures that the learned representations respect the fundamental symmetries of molecular systems, leading to more accurate and physically meaningful predictions.
+- **Multi-Family Support**: Process multiple families of molecular conformers simultaneously with intelligent family-based organization
+- **Advanced Clustering**: K-means based conformer selection with family-aware processing and hierarchical analysis
+- **Flexible Embedding**: Multiple sophisticated strategies for combining conformer embeddings (Deep Sets, Self-Attention, etc.)
+- **Contrastive Learning**: Family-scoped cluster-aware contrastive learning with relationship weighting
+- **Performance Optimization**: Built-in profiling and Chrome tracing for performance analysis
+- **Interactive Visualization**: Advanced PCA and plotting tools for embedding analysis
+- **Memory Efficiency**: Smart memory management for large molecular systems
+- **Comprehensive Logging**: Detailed tracking and visualization of training progress
+
+## Project Structure
+
+```
+equicat/
+├── src/
+│   ├── experiments/                    # Experimental studies and research
+│   │   ├── study1/
+│   │   ├── study2/
+│   │   ├── study3/
+│   │   └── equicat_regression_studies.md
+│   ├── sanity_checks/                  # Validation and testing
+│   │   ├── conformer_embedding_combiner_sanity_check.py
+│   │   └── readout_sanity_check.py
+│   ├── conformer_ensemble_embedding_combiner.py   # Embedding combination
+│   ├── data_loader.py                  # Data processing and loading
+│   ├── equicat.py                      # Core model architecture
+│   ├── equicat_plus_nonlinear.py       # Enhanced model with non-linear readout
+│   ├── generate_equicat_embeddings.py  # Embedding generation
+│   ├── molecular_clustering.py         # Molecular clustering tools
+│   ├── pca.py                         # Dimensionality reduction and visualization
+│   ├── plot_loss_curves.py            # Training visualization
+│   └── train.py                       # Training pipeline
+├── .gitignore
+├── LICENSE
+├── README.md
+└── requirements.txt
+```
 
 ## Installation
 
-To use EQUICAT, you need to install the following dependencies:
+### Prerequisites
+- Python 3.8+
+- CUDA-compatible GPU (recommended)
+- 16GB+ RAM recommended for large molecular systems
 
-```bash
-pip install torch torch_geometric e3nn mace molli numpy
+### Dependencies
+```
+torch>=1.9.0
+torch-geometric>=2.0.0
+e3nn>=0.4.0
+numpy>=1.20.0
+scipy>=1.7.0
+scikit-learn>=0.24.0
+matplotlib>=3.3.0
+plotly>=5.0.0
+h5py>=3.0.0
 ```
 
-Clone the repository:
+### Setup
 
+1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/equicat.git
 cd equicat
 ```
 
-## Project Structure
-
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or
+.\venv\Scripts\activate  # Windows
 ```
-equicat/src
-│
-├── main.py
-├── data_loader.py
-├── equicat.py
-├── equicat_plus_nonlinear.py
-├── conformer_ensemble_embedding_combiner.py
-├── contrastive_loss.py
-└── train.py
 
-equicat/output
-│
-└── output.txt
-
-equicat/
-│
-├── README.md
-└── requirements.txt
+3. Install required packages:
+```bash
+pip install -r requirements.txt
 ```
+
+## Core Components
+
+### 1. Molecular Data Processing (`data_loader.py`)
+The data processing pipeline handles complex molecular data with efficiency and flexibility:
+
+- **MultiFamilyConformerDataset**:
+  - Cross-family sampling for balanced representation
+  - GPU-accelerated processing pipelines
+  - Smart batching strategies
+  - Built-in profiling capabilities
+  - Automatic data validation
+  - Memory usage optimization
+
+- **Features**:
+  - Supports multiple molecular file formats
+  - Efficient memory management
+  - Comprehensive error handling
+  - Chrome trace generation for performance analysis
+
+### 2. Model Architecture
+The model is structured in two main components:
+
+#### Base Model (`equicat.py`)
+- **Core Features**:
+  - Equivariant message passing layers
+  - Geometric feature processing
+  - Symmetry-preserving operations
+  - Advanced radial basis functions
+  - Spherical harmonics computations
+  - Edge feature generation
+
+#### Enhanced Model (`equicat_plus_nonlinear.py`)
+- **Advanced Features**:
+  - Non-linear readout mechanism
+  - Flexible activation functions
+  - Scalar/vector output support
+  - Residual connections
+  - Advanced normalization layers
+  - Enhanced feature combination strategies
+
+### 3. Molecular Clustering (`molecular_clustering.py`)
+Sophisticated clustering system for molecular analysis:
+
+- **Clustering Capabilities**:
+  - Family-aware molecular organization
+  - K-means based conformer selection
+  - Hierarchical relationship analysis
+  - Automatic cluster validation
+  - Dynamic cluster size adaptation
+
+- **Visualization**:
+  - Interactive cluster plots
+  - Distance matrix visualization
+  - Dendrogram generation
+  - Family distribution analysis
+
+### 4. Analysis and Visualization
+Comprehensive tools for data analysis and visualization:
+
+#### PCA Analysis (`pca.py`)
+- **Core Features**:
+  - Principal Component Analysis
+  - Interactive visualization
+  - Family-based coloring
+  - Custom plot styling
+  - Dynamic tooltips
+  - Export capabilities
+
+#### Training Visualization (`plot_loss_curves.py`)
+- **Plotting Features**:
+  - Combined loss/learning rate plots
+  - Interactive Plotly graphs
+  - Multiple visualization types
+  - Customizable styling
+  - Progress tracking
+  - Export functionality
+
+### 5. Embedding Generation (`generate_equicat_embeddings.py`)
+Flexible system for generating molecular embeddings:
+
+- **Key Features**:
+  - Multiple embedding strategies
+  - Efficient batch processing
+  - GPU acceleration
+  - Memory-optimized operations
+  - Comprehensive error handling
+
+### 6. Training Pipeline (`train.py`)
+Advanced training system with multiple optimization strategies:
+
+- **Training Features**:
+  - Cluster-aware contrastive learning
+  - Multiple scheduler options
+  - Comprehensive checkpointing
+  - Early stopping mechanism
+  - Learning rate scheduling
+  - Gradient clipping
+
+- **Monitoring**:
+  - Performance profiling
+  - Memory tracking
+  - Progress logging
+  - Loss visualization
 
 ## Usage
 
-To run the EQUICAT pipeline:
+### Basic Usage
 
-```bash
-python main.py
-```
-
-To train the EQUICAT model:
-
-```bash
-python train.py
-```
-
-## Module Descriptions
-
-### main.py
-
-`main.py` serves as the entry point for the EQUICAT pipeline. It orchestrates the entire process of loading conformer data, configuring the EQUICAT model, generating embeddings, and applying various pooling methods to combine these embeddings.
-
-Key functionalities:
-- Loads conformer data from the MOLLI library
-- Configures and initializes the EQUICAT model
-- Processes conformers through the model to generate embeddings
-- Applies ensemble pooling techniques to combine conformer embeddings
-- Manages the overall workflow of the EQUICAT pipeline
-
-Usage example:
-
+1. Prepare your molecular data:
 ```python
-from main import main
+from data_loader import MultiFamilyConformerDataset
 
-if __name__ == "__main__":
-    main()
+dataset = MultiFamilyConformerDataset(
+    conformer_libraries=libraries,
+    cutoff=6.0,
+    sample_size=30,
+    max_conformers=10
+)
 ```
 
-### data_loader.py
-
-`data_loader.py` is responsible for loading and processing conformer data. It provides a custom dataset class, data loading utilities, and efficient processing functions to handle molecular conformer data.
-
-Key components:
-- `ConformerDataset`: A custom PyTorch dataset class for handling conformer ensembles
-- `compute_avg_num_neighbors`: Utility function to calculate average neighbors in a batch
-- `custom_collate`: Custom collation function for batching data
-- `process_data`: Generator function for processing conformer data in batches
-
-Usage example:
-
+2. Initialize and train the model:
 ```python
-from data_loader import ConformerDataset, process_data
+from train import train_equicat
 
-dataset = ConformerDataset(conformer_ensemble, cutoff)
-for batch_data in process_data(dataset, batch_size=32):
-    # Process batch_data
+model = train_equicat(
+    model=model,
+    dataset=dataset,
+    device=device,
+    embedding_type='improved_self_attention',
+    scheduler_type='cosine',
+    contrastive_loss_fn=contrastive_loss_fn
+)
 ```
 
-### equicat.py
-
-`equicat.py` implements the core EQUICAT model, a neural network architecture designed for equivariant learning on molecular systems.
-
-Key features:
-- Equivariant processing of molecular geometries
-- Handling of variable-sized molecular inputs
-- Incorporation of spherical harmonics for angular information
-- Use of radial basis functions for distance information
-- Implementation of symmetric contractions for feature aggregation
-
-Usage example:
-
+3. Generate embeddings:
 ```python
-from equicat import EQUICAT
+from generate_equicat_embeddings import main as generate_embeddings
 
-model = EQUICAT(model_config, z_table)
-output = model(input_dict)
+generate_embeddings()
 ```
 
-### equicat_plus_nonlinear.py
+### Advanced Usage
 
-`equicat_plus_nonlinear.py` extends the EQUICAT model with a custom non-linear readout layer, allowing for more complex processing of molecular representations while preserving equivariance.
-
-Key components:
-- `CustomNonLinearReadout`: A custom readout layer with equivariant linear transformations and non-linear activations
-- `EQUICATPlusNonLinearReadout`: Combines the EQUICAT model with the custom non-linear readout layer
-
-Usage example:
-
+#### Molecular Clustering and Analysis
 ```python
-from equicat_plus_nonlinear import EQUICATPlusNonLinearReadout
+from molecular_clustering import MolecularClusterProcessor
+from pca import create_interactive_plot
 
-model = EQUICATPlusNonLinearReadout(model_config, z_table)
-output = model(input_dict)
+# Initialize clustering
+processor = MolecularClusterProcessor(
+    library_paths=CONFORMER_LIBRARY_PATHS,
+    clustering_cutoff=0.2,
+    output_dir='clustering_results'
+)
+
+# Process and visualize
+processor.process_all_families()
+processor.visualize_clusters(family="family1", use_pca=True)
+
+# Generate PCA visualization
+create_interactive_plot(pca_result, keys, families)
 ```
 
-### conformer_ensemble_embedding_combiner.py
-
-`conformer_ensemble_embedding_combiner.py` provides advanced functionality to combine embeddings from multiple conformers of a molecule into a single representation. It implements three different methods: Mean Pooling, Deep Sets, and Self-Attention.
-
-Key components:
-- `ConformerEnsembleEmbeddingCombiner`: The main class implementing the combining methods
-- `process_conformer_ensemble`: Processes a single batch of conformer embeddings
-- `process_ensemble_batches`: Processes all batches for a single ensemble and averages the results
-
-Usage example:
-
+#### Training Visualization
 ```python
-from conformer_ensemble_embedding_combiner import process_ensemble_batches
+from plot_loss_curves import plot_average_loss_and_learning_rate
+from pca import visualize_embeddings
 
-ensemble_embeddings = process_ensemble_batches(list_of_batch_embeddings)
+# Plot training progress
+plot_average_loss_and_learning_rate('training.log')
+
+# Visualize embeddings
+visualize_embeddings(embeddings)
 ```
 
-### contrastive_loss.py
+## Performance Optimization
 
-`contrastive_loss.py` implements a contrastive loss function for semi-supervised learning in the context of molecular conformer analysis. The loss encourages embeddings of the same molecule to be close together in the embedding space, while pushing embeddings of different molecules apart.
-
-Key components:
-- `contrastive_loss`: Function that computes the contrastive loss for a batch of embeddings
-
-Usage example:
-
+### GPU Acceleration
+EquiCat automatically utilizes available GPU resources:
 ```python
-from contrastive_loss import contrastive_loss
-
-loss = contrastive_loss(embeddings, labels)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ```
 
-### train.py
+### Memory Management
+- Control memory usage with `max_conformers`
+- Enable profiling for monitoring:
+```python
+from torch.profiler import profile, ProfilerActivity
 
-`train.py` is responsible for training the EQUICAT model using the contrastive loss function. It sets up the training pipeline, including data loading, model initialization, and the training loop.
-
-Key functionalities:
-- Sets up logging for the training process
-- Initializes the EQUICAT model and optimizer
-- Implements the training loop using contrastive loss
-- Saves the trained model
-
-Usage:
-
-```bash
-python train.py
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+             profile_memory=True) as prof:
+    # Your code here
+    pass
 ```
-
-## Conformer Embedding Creation Process
-
-The EQUICAT model generates conformer embeddings through the following steps:
-
-1. **Initial Embedding**: Each atom is represented by its atomic number and 3D position. The `node_embedding` block converts atomic numbers into initial node features.
-
-2. **Edge Features**: The `radial_embedding` block computes edge features based on inter-atomic distances. Spherical harmonics encode relative atom orientations, producing `edge_attrs`.
-
-3. **Message Passing**: A series of interaction blocks process the data, updating node features, combining them with edge attributes, aggregating messages, and applying a linear operation.
-
-4. **Equivariant Updates**: After each interaction, an equivariant product basis (`products` blocks) maintains equivariance.
-
-5. **Final Embedding**: The output from the last interaction and product block yields the final node-level embeddings, representing each atom within the context of the entire conformer.
-
-6. **Readout**: The `readout` block (linear or non-linear) is applied to the final node embeddings, producing the final conformer-level embedding or prediction.
-
-This process creates embeddings that capture both local atomic environments and global conformer structure, while maintaining equivariance to rotations and translations.
-
-## Data Flow
-
-1. Conformer data is loaded and processed by `data_loader.py`
-2. The processed data is fed into the EQUICAT model (`equicat.py` or `equicat_plus_nonlinear.py`)
-3. The model generates embeddings for each conformer
-4. These embeddings are combined using methods in `conformer_ensemble_embedding_combiner.py`
-5. During training (`train.py`), the contrastive loss (`contrastive_loss.py`) is used to optimize the model
-6. The main pipeline (`main.py`) orchestrates this entire process
 
 ## Contributing
 
-Contributions to EQUICAT are welcome! Please follow these steps:
+We welcome contributions! Please follow these steps:
 
 1. Fork the repository
-2. Create a new branch for your feature
-3. Commit your changes
-4. Push to your fork
-5. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+### Development Guidelines
+
+- Add comprehensive docstrings to all new functions and classes
+- Maintain test coverage
+- Follow PEP 8 style guidelines
+- Update documentation for significant changes
+- Add appropriate unit tests for new features
+
+
+## Citation
+
+If you use EquiCat in your research, please cite:
+
+```bibtex
+@software{equicat2024,
+  author = {Utkarsh Sharma, Elena Burlova, Alexander Shved, Scott Denmark, and Ganesh Sivaraman },
+  title = {EquiCat: An Equivariant Neural Network Architecture for Predicting Enantioselectivity in Asymmetric Catalysis},
+  year = {2024},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/yourusername/equicat}}
+}
+```
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
