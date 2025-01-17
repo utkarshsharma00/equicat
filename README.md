@@ -6,7 +6,7 @@
 
 ## Overview
 
-EquiCat is an advanced framework for analyzing molecular conformers using equivariant neural networks. Building upon the MACE (Many-body Atomic Cluster Expansion) architecture, it processes molecular geometries while preserving their inherent symmetries. The framework introduces novel techniques for multi-family molecular analysis, cluster-aware contrastive learning, and sophisticated conformer embedding combination strategies.
+EquiCat is an advanced framework for analyzing molecular conformers using equivariant neural networks. Built upon the MACE (Multi Atomic Cluster Expansion) layers, it processes molecular geometries while preserving their inherent symmetries. The framework introduces novel techniques for multi-family molecular analysis, cluster-aware contrastive learning, and sophisticated conformer embedding combination strategies.
 
 ### Key Features
 
