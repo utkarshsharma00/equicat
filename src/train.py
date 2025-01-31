@@ -680,8 +680,8 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
     clustering_results_dir=CLUSTERING_RESULTS_DIR,
     weights={
         'same_family_same_cluster': 1.0,
-        'same_family_diff_cluster': 0.3,
-        'diff_family': -2.0
+        'same_family_diff_cluster': 1.0,
+        'diff_family': 1.0
     },
     temperature=0.25
 )
