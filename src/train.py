@@ -8,7 +8,7 @@ progress tracking.
 
 Key components:
 1. Training Architecture:
-   - Cluster-aware contrastive learning mechanism
+   - Cluster-aware contrastive learning mechanism with adaptive weighting
    - Multi-family molecule handling
    - Advanced embedding processing
    - Hierarchical similarity computation
@@ -26,12 +26,12 @@ Key components:
    - Multi-stage learning rate scheduling
    - Advanced gradient clipping
    - Early stopping with patience
-   - Loss computation with cluster awareness
+   - Loss computation with adaptive temperature and margin
    - Detailed progress tracking
    - Memory-efficient batch processing
 
 Key Features:
-1. Cluster-aware contrastive learning
+1. Cluster-aware contrastive learning with dynamic adaptation
 2. Family-based molecular organization
 3. Hierarchical similarity computation
 4. Comprehensive logging system
@@ -40,11 +40,11 @@ Key Features:
 7. Gradient monitoring and control
 8. Memory optimization
 9. Multi-family support
-10. Cluster-based training
+10. Cluster-based training with adaptive weighting
 
 Author: Utkarsh Sharma
-Version: 4.0.0
-Date: 12-14-2024 (MM-DD-YYYY)
+Version: 4.0.1
+Date: 02-03-2025 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -66,26 +66,38 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+- v4.0.1 (02-03-2025):
+  * Fixed contrastive loss stability issues
+  * Improved temperature annealing with exponential decay (0.95^epoch)
+  * Enhanced margin calculation with training progress awareness
+  * Fixed negative relationship handling using magnitude-based scoring
+  * Improved class balancing with inverse frequency weights
+  * Added robust handling for unpaired samples
+  * Enhanced numerical stability in loss computation
+  * Added comprehensive loss component logging
+
 - v4.0.0 (12-14-2024):
-  * Added cluster-aware contrastive loss
   * Implemented family-scoped molecule clustering
+  * Added initial cluster-aware contrastive loss
   * Added molecular relationship weighting
   * Enhanced batch processing with cluster awareness
-  * Improved training stability
   * Added detailed relationship logging
-  * Removed simple contrastive loss
   * Removed conformer padding functionality
   * Restructured training pipeline
   * Removed basic sampling approach
+
 - v3.1.0 (09-11-2024):
   * Added final embeddings saving
   * Enhanced logging capabilities
+
 - v3.0.0 (09-01-2024):
   * Added multi-molecule processing
   * Initial contrastive learning implementation
+
 - v2.0.0 (08-01-2024):
   * Added GPU support
   * Added conformer padding (removed in v4.0.0)
+
 - v1.0.0 (07-01-2024):
   * Initial implementation
 
@@ -347,15 +359,17 @@ class ClusterAwareContrastiveLoss:
         clustering_results_dir: str,
         weights: Optional[Dict[str, float]] = None,
         temperature: float = 0.25,
+        max_epochs: int = EPOCHS,
     ):
         self.clustering_results_dir = clustering_results_dir
         self.temperature = temperature
+        self.max_epochs = max_epochs
         
         # Default weights with hierarchical structure
         default_weights = {
             'same_family_same_cluster': 1.0,  # Strong attraction within family+cluster
-            'same_family_diff_cluster': 0.3,  # Medium attraction within family
-            'diff_family': -2.0  # Strong repulsion between families
+            'same_family_diff_cluster': -0.1,  # Medium attraction within family
+            'diff_family': -0.2  # Strong repulsion between families
         }
         
         self.weights = weights if weights is not None else default_weights
@@ -578,20 +592,26 @@ class ClusterAwareContrastiveLoss:
             percentage = (count / total_pairs * 100) if total_pairs > 0 else 0
             logger.info(f"{rel_type}: {count} pairs ({percentage:.1f}%)")
 
-    def __call__(self, sample_embeddings):
+    def __call__(self, sample_embeddings, current_epoch: int) -> torch.Tensor:
         """
-        Computes family-scoped cluster-aware contrastive loss for a batch of embeddings.
-
+        Computes family-scoped cluster-aware contrastive loss with improved stability and adaptivity.
+        
         Args:
-            sample_embeddings (List[Tuple[torch.Tensor, str, str]]): List of (embedding, key, family) tuples
-
-        Returns:
-            torch.Tensor: Computed contrastive loss value
+            sample_embeddings: List of (embedding, key, family) tuples
+            current_epoch: Current training epoch number
+            max_epochs: Maximum number of training epochs (default: 500)
         """
         embeddings = []
-        molecules = []  # Store (key, family) pairs
+        molecules = []
+        eps = 1e-8
+
+        # Adaptive margin that increases as training progress
+        margin = 0.1 + 0.4 * (current_epoch / self.max_epochs)
         
-        # Extract embeddings and molecule info
+        # Exponential decay for temperature
+        current_temp = self.temperature * (0.95 ** current_epoch)
+        current_temp = max(0.01, min(1.0, current_temp))  # Clamp between 0.01 and 1.0
+
         for emb, key, family in sample_embeddings:
             embeddings.append(emb)
             molecules.append((key, family))
@@ -599,53 +619,86 @@ class ClusterAwareContrastiveLoss:
         if len(embeddings) < 2:
             logger.warning("Not enough embeddings for contrastive loss")
             return torch.tensor(0.0, requires_grad=True, device=embeddings[0].device)
-            
+                
         embeddings = torch.stack(embeddings)
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
         # Compute similarity matrix
-        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
-        
-        # Compute relationship matrix
-        relationships = self._compute_relationship_matrix(molecules).to(embeddings.device)
-        
-        # Log batch analysis
-        self._log_batch_relationships(relationships, molecules)
-        
-        # Compute weighted loss
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / current_temp
         exp_sim = torch.exp(similarity_matrix)
         
-        # Separate positive and negative relationships
-        pos_mask = (relationships > 0).float()
-        neg_mask = (relationships < 0).float()
+        # Get relationship matrix and create masks
+        relationships = self._compute_relationship_matrix(molecules).to(embeddings.device)
+        same_cluster_mask = (relationships == self.weights['same_family_same_cluster']).float()
+        same_cluster_mask.fill_diagonal_(0)
+        other_rels_mask = (relationships != self.weights['same_family_same_cluster']).float()
+        other_rels_mask.fill_diagonal_(0)
         
-        # Remove self-similarity
-        pos_mask.fill_diagonal_(0)
-        neg_mask.fill_diagonal_(0)
+        # Calculate numbers of positive and negative pairs
+        pos_per_sample = same_cluster_mask.sum(dim=1)
+        neg_per_sample = other_rels_mask.sum(dim=1)
         
-        # Weight the relationships
-        weighted_pos = pos_mask * relationships
-        weighted_neg = neg_mask * (-relationships)  # Make negative relationships positive for loss computation
+        # Identify samples with and without positive pairs
+        has_pos_pairs = (pos_per_sample > 0)
         
-        # Compute positive and negative scores
-        pos_scores = torch.sum(exp_sim * weighted_pos, dim=1)
-        neg_scores = torch.sum(exp_sim * weighted_neg, dim=1)
+        # Improved inverse frequency weighting for class balancing
+        total_pairs = pos_per_sample + neg_per_sample + eps
+        pos_weight = neg_per_sample / total_pairs
+        neg_weight = pos_per_sample / total_pairs
+        neg_weight = neg_weight.unsqueeze(1)
         
-        # Compute loss with numerical stability
-        eps = 1e-8
-        loss = -torch.log((pos_scores + eps) / (neg_scores + eps))
+        # Compute positive and negative scores with relationship magnitudes
+        pos_scores = torch.sum(exp_sim * same_cluster_mask * pos_weight, dim=1)
+        neg_scores = torch.sum(exp_sim * other_rels_mask * torch.abs(relationships) * neg_weight, dim=1)
         
-        # Apply mask for valid samples
-        valid_mask = (pos_scores > 0).float()
-        loss = (loss * valid_mask).sum() / (valid_mask.sum() + eps)
+        # Initialize loss tensor
+        loss = torch.zeros_like(pos_scores)
         
-        # Log loss components
-        logger.info(f"\nLoss Components:")
-        logger.info(f"Average positive score: {pos_scores.mean().item():.4f}")
-        logger.info(f"Average negative score: {neg_scores.mean().item():.4f}")
-        logger.info(f"Final loss: {loss.item():.4f}")
+        # Compute standard contrastive loss for samples with positive pairs
+        numerator = torch.clamp(pos_scores, min=eps)
+        denominator = numerator + torch.abs(neg_scores) + margin + eps
+        standard_loss = -torch.log(numerator / denominator)
+        loss[has_pos_pairs] = standard_loss[has_pos_pairs]
         
-        return loss
+        # Compute negative-only loss for samples without positive pairs
+        neg_only_loss = -torch.log(1.0 / (1.0 + torch.abs(neg_scores) + margin + eps))
+        loss[~has_pos_pairs] = neg_only_loss[~has_pos_pairs]
+        
+        # Average over all samples
+        final_loss = loss.mean()
+        
+        # Enhanced logging
+        logger.info("\nStep 1: Training Parameters")
+        logger.info(f"Epoch: {current_epoch}/{self.max_epochs}")
+        logger.info(f"Current temperature: {current_temp:.4f}")
+        logger.info(f"Current margin: {margin:.4f}")
+        
+        logger.info("\nStep 2: Batch Statistics")
+        logger.info(f"Number of samples: {len(embeddings)}")
+        logger.info(f"Average similarity: {similarity_matrix.mean().item():.4f}")
+        logger.info(f"Average positive weight: {pos_weight.mean().item():.4f}")
+        logger.info(f"Average negative weight: {neg_weight.mean().item():.4f}")
+        
+        logger.info("\nStep 3: Relationship Analysis")
+        self._log_batch_relationships(relationships, molecules)
+        logger.info(f"Samples with positive pairs: {has_pos_pairs.sum().item()}")
+        logger.info(f"Samples without positive pairs: {(~has_pos_pairs).sum().item()}")
+        logger.info(f"Average positive pairs per sample: {pos_per_sample.mean().item():.2f}")
+        logger.info(f"Average negative pairs per sample: {neg_per_sample.mean().item():.2f}")
+        
+        logger.info("\nStep 4: Score Analysis")
+        logger.info(f"Positive scores range: [{pos_scores.min().item():.4f}, {pos_scores.max().item():.4f}]")
+        logger.info(f"Negative scores range: [{neg_scores.min().item():.4f}, {neg_scores.max().item():.4f}]")
+        logger.info(f"Pos/Neg ratio: {(pos_scores/(neg_scores + eps)).mean():.4f}")
+        
+        logger.info("\nStep 5: Loss Analysis")
+        if has_pos_pairs.any():
+            logger.info(f"Standard contrastive loss mean: {standard_loss[has_pos_pairs].mean().item():.4f}")
+        if (~has_pos_pairs).any():
+            logger.info(f"Negative-only loss mean: {neg_only_loss[~has_pos_pairs].mean().item():.4f}")
+        logger.info(f"Final combined loss: {final_loss.item():.4f}")
+        
+        return final_loss
 
 def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch, contrastive_loss_fn):
     """
@@ -676,16 +729,6 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
     scheduler = get_scheduler(scheduler_type, optimizer, EPOCHS, steps_per_epoch)
     logger.info("Optimizer and scheduler initialized")
 
-    contrastive_loss_fn = ClusterAwareContrastiveLoss(
-    clustering_results_dir=CLUSTERING_RESULTS_DIR,
-    weights={
-        'same_family_same_cluster': 1.0,
-        'same_family_diff_cluster': 1.0,
-        'diff_family': 1.0
-    },
-    temperature=0.25
-)
-
     logger.info(f"Loaded cluster data: {contrastive_loss_fn.cluster_data}")
 
     best_loss = float('inf')
@@ -710,7 +753,7 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
             sample_embeddings = process_sample(model, sample, device, embedding_type)
             # loss = compute_contrastive_loss(sample_embeddings)
-            loss = contrastive_loss_fn(sample_embeddings)
+            loss = contrastive_loss_fn(sample_embeddings, current_epoch=epoch + 1) 
 
             loss.backward()
             clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
@@ -959,8 +1002,15 @@ def main(args):
     
     # Create contrastive loss with new implementation
     contrastive_loss_fn = ClusterAwareContrastiveLoss(
-        clustering_results_dir=CLUSTERING_RESULTS_DIR
-    )
+    clustering_results_dir=CLUSTERING_RESULTS_DIR,
+    weights={
+        'same_family_same_cluster': 1.0,
+        'same_family_diff_cluster': -0.1,
+        'diff_family': -0.2
+    },
+    temperature=0.25,
+    max_epochs=EPOCHS
+)
 
     logger.info("Creating dataset")
     dataset = MultiFamilyConformerDataset(
@@ -1040,7 +1090,7 @@ if __name__ == "__main__":
                         choices=['mean_pooling', 'deep_sets', 'self_attention', 'improved_deep_sets', 'improved_self_attention', 'all'],
                         help='Type of embedding to use for loss computation')
     parser.add_argument('--resume_from_checkpoint', type=str, help='Path to checkpoint file to resume training from')
-    parser.add_argument('--scheduler', type=str, default='step',
+    parser.add_argument('--scheduler', type=str, default='cosine_restart',
                         choices=['plateau', 'step', 'cosine', 'cosine_restart', 'onecycle'],
                         help='Type of learning rate scheduler to use')
     parser.add_argument('--num_families', type=int, default=None, help='Number of molecule families to use')
