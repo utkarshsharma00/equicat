@@ -74,7 +74,6 @@ Change Log:
   * Enhanced batch statistics logging
   * Improved gradient handling
   * Added comprehensive loss component analysis
-
 - v4.0.1 (02-03-2025):
   * Fixed contrastive loss stability issues
   * Improved temperature annealing with exponential decay (0.95^epoch)
@@ -84,7 +83,6 @@ Change Log:
   * Added robust handling for unpaired samples
   * Enhanced numerical stability in loss computation
   * Added comprehensive loss component logging
-
 - v4.0.0 (12-14-2024):
   * Implemented family-scoped molecule clustering
   * Added initial cluster-aware contrastive loss
@@ -94,11 +92,9 @@ Change Log:
   * Removed conformer padding functionality
   * Restructured training pipeline
   * Removed basic sampling approach
-
 - v3.1.0 (09-11-2024):
   * Added final embeddings saving
   * Enhanced logging capabilities
-
 - v3.0.0 (09-01-2024):
   * Added multi-molecule processing
   * Initial contrastive learning implementation
