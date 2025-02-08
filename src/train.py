@@ -170,7 +170,7 @@ CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clusteri
 SAMPLE_SIZE = 30
 MAX_CONFORMERS = 10
 CUTOFF = 6.0
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 5e-4
 EPOCHS = 500
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 25
@@ -394,8 +394,8 @@ class ClusterAwareContrastiveLoss:
         # Default weights with hierarchical structure
         default_weights = {
             'same_family_same_cluster': 1.0,  # Strong attraction within family+cluster
-            'same_family_diff_cluster': -0.1,  # Medium attraction within family
-            'diff_family': -0.2  # Strong repulsion between families
+            'same_family_diff_cluster': -0.25,  # Medium attraction within family
+            'diff_family': -0.5  # Strong repulsion between families
         }
         
         self.weights = weights if weights is not None else default_weights
@@ -1017,10 +1017,10 @@ def main(args):
     clustering_results_dir=CLUSTERING_RESULTS_DIR,
     weights={
         'same_family_same_cluster': 1.0,
-        'same_family_diff_cluster': -0.1,
-        'diff_family': -0.2
+        'same_family_diff_cluster': -0.25,
+        'diff_family': -0.5
     },
-    temperature=0.5,
+    temperature=0.25,
     max_epochs=EPOCHS
 )
 
