@@ -1,45 +1,45 @@
 """
 EquiCat Loss Curves Visualization
 
-This script provides interactive visualization tools for analyzing EquiCat training metrics,
-combining loss curves and learning rate plots for comprehensive training analysis. It features
-robust data extraction from logs and generates publication-quality interactive plots.
+This script provides comprehensive visualization tools for analyzing training metrics,
+featuring split views for step-wise and epoch-level analysis. It generates 
+publication-quality interactive plots with enhanced readability and analysis tools.
 
 Key components:
 1. Data Processing:
-   - Advanced log parsing with regex patterns
+   - Multi-level metric extraction (step, running avg, epoch)
+   - Enhanced regex pattern matching
    - Robust error handling for malformed logs
-   - Multi-metric data extraction
-   - Time series data validation
+   - Time series data validation and smoothing
 
 2. Visualization Features:
-   - Interactive dual-axis plotting
-   - Combined loss and learning rate visualization
-   - Dynamic hover information
-   - Responsive layout design
-   - Custom plot styling options
+   - Split-view plotting (step-wise and epoch-wise)
+   - Dual-axis visualization with proper scaling
+   - Interactive hover tools with detailed metrics
+   - Responsive and publication-ready layouts
+   - Enhanced readability with color coding
 
 3. Output Management:
-   - HTML report generation
+   - Interactive HTML report generation
    - Flexible file path handling
-   - Directory structure validation
-   - Error logging and debugging
+   - Comprehensive error logging
+   - Plot validation and debugging
 
 Key Features:
-1. Dual-axis visualization system
-2. Interactive data exploration
-3. Comprehensive error handling
-4. Flexible output formatting
-5. Robust data extraction
-6. Publication-ready plots
-7. Advanced hover tooltips
-8. Customizable plot styling
+1. Split-view visualization system
+2. Running average loss tracking
+3. Scientific notation for learning rates
+4. Automatic scale adjustment
+5. Enhanced hover information
+6. Publication-ready styling
+7. Responsive layout design
+8. Comprehensive error handling
 9. Directory management
-10. Debug information logging
+10. Debug information system
 
 Author: Utkarsh Sharma
-Version: 4.0.0
-Date: 12-14-2024 (MM-DD-YYYY)
+Version: 4.0.1
+Date: 08-02-2025 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -53,6 +53,15 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+- v4.0.1 (02-08-2025):
+  * Added split-view visualization
+  * Enhanced metric tracking and display
+  * Improved axis scaling and notation
+  * Added running loss visualization
+  * Enhanced plot styling and readability
+  * Improved hover information
+  * Fixed learning rate display
+  * Added subplot organization
 - v4.0.0 (12-14-2024):
   * Standardized module naming and structure
   * Enhanced error handling and logging
@@ -91,40 +100,45 @@ np.set_printoptions(precision=15)
 np.random.seed(0)
 
 # Constants
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large/"
-LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large/"
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/loss_check/"
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/loss_check/"
 LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
 
-def plot_average_loss_and_learning_rate(log_file):
+def plot_training_metrics(log_file):
     """
-    Generate a combined plot of average loss and learning rate across epochs.
-
-    This function reads the training log file, extracts epoch, average loss,
-    and learning rate information, and creates an interactive Plotly graph
-    with dual y-axes for loss and learning rate.
+    Generate comprehensive visualization of training metrics with split views for step-wise 
+    and epoch-level analysis. Creates interactive plots showing instantaneous and running 
+    losses along with learning rate progression using dual y-axes scales.
 
     Args:
-        log_file (str): Path to the training log file.
+        log_file (str): Path to the training log file containing metric data
+                       with epoch, loss, and learning rate information.
 
     Returns:
-        None. Saves the generated plot as an HTML file.
+        None. Saves an interactive HTML plot containing step-wise and epoch-wise 
+        training metrics.
     """
-    # Initialize lists to store extracted data
+    # Initialize data lists
     epochs = []
     avg_losses = []
+    instant_losses = []
+    running_losses = []
     learning_rates = []
-    
-    # Define regex patterns to match relevant log lines
-    epoch_pattern = re.compile(r"Starting epoch (\d+)/(\d+)")
-    avg_loss_pattern = re.compile(r"Epoch \[(\d+)/\d+\], Average Loss: ([-\d.]+), Final LR: ([\d.e-]+)")
-    
+    steps = []
     current_epoch = 0
     
-    # Read the log file and extract data
+    # Patterns
+    epoch_pattern = re.compile(r"Starting epoch (\d+)/(\d+)")
+    avg_loss_pattern = re.compile(r"Epoch \[(\d+)/\d+\], Average Loss: ([-\d.]+), Final LR: ([\d.e-]+)")
+    sample_pattern = re.compile(r"Epoch \[(\d+)/\d+\], Sample \[\d+/\d+\], Loss: ([-\d.]+), Running Loss: ([-\d.]+), LR: ([\d.e-]+)")
+    
+    # Extract data
+    step_counter = 0
     with open(log_file, 'r') as f:
         for line in f:
             epoch_match = epoch_pattern.search(line)
             avg_loss_match = avg_loss_pattern.search(line)
+            sample_match = sample_pattern.search(line)
             
             if epoch_match:
                 current_epoch = int(epoch_match.group(1))
@@ -136,35 +150,111 @@ def plot_average_loss_and_learning_rate(log_file):
                 epochs.append(epoch)
                 avg_losses.append(avg_loss)
                 learning_rates.append(final_lr)
+            
+            if sample_match:
+                instant_losses.append(float(sample_match.group(2)))
+                running_losses.append(float(sample_match.group(3)))
+                steps.append(step_counter)
+                step_counter += 1
     
-    # Create a subplot with two y-axes
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # Create two subplots with secondary y-axis for learning rate
+    fig = make_subplots(
+        rows=2, 
+        cols=1, 
+        subplot_titles=('Step-wise Training Loss', 'Epoch-wise Metrics'),
+        specs=[[{"secondary_y": False}], [{"secondary_y": True}]]
+    )
     
-    # Add average loss trace
+    # Plot 1: Step-wise losses
     fig.add_trace(
-        go.Scatter(x=epochs, y=avg_losses, mode='lines+markers', name='Average Loss'),
+        go.Scatter(
+            x=steps, 
+            y=instant_losses, 
+            mode='lines', 
+            name='Instantaneous Loss', 
+            opacity=0.7,
+            line=dict(color='pink', width=1)
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=steps, 
+            y=running_losses, 
+            mode='lines', 
+            name='Running Loss', 
+            line=dict(color='blue', width=2)
+        ),
+        row=1, col=1
+    )
+    
+    # Plot 2: Epoch-wise metrics
+    fig.add_trace(
+        go.Scatter(
+            x=epochs, 
+            y=avg_losses, 
+            mode='lines+markers', 
+            name='Epoch Average Loss',
+            line=dict(color='green', width=2)
+        ),
+        row=2, col=1,
         secondary_y=False
     )
     
-    # Add learning rate trace
+    # Add learning rate trace with secondary y-axis
     fig.add_trace(
-        go.Scatter(x=epochs, y=learning_rates, mode='lines+markers', name='Learning Rate'),
+        go.Scatter(
+            x=epochs, 
+            y=learning_rates, 
+            mode='lines+markers', 
+            name='Learning Rate',
+            line=dict(color='purple', width=2)
+        ),
+        row=2, col=1,
         secondary_y=True
     )
     
-    # Update layout with titles and labels
+    # Update layout
     fig.update_layout(
-        title_text="Average Loss and Learning Rate",
-        xaxis_title="Epoch",
-        hovermode="x unified"
+        height=900,
+        showlegend=True,
+        hovermode="x unified",
+        title_text="Training Metrics",
+        title_x=0.5,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
     )
-    fig.update_yaxes(title_text="Average Loss", secondary_y=False)
-    fig.update_yaxes(title_text="Learning Rate", secondary_y=True)
     
-    # Save the plot as an HTML file
-    output_file = os.path.join(OUTPUT_PATH, 'average_loss_and_learning_rate.html')
+    # Update axes labels and ranges
+    fig.update_xaxes(title_text="Steps", row=1, col=1)
+    fig.update_xaxes(title_text="Epochs", row=2, col=1)
+    
+    fig.update_yaxes(title_text="Loss", row=1, col=1)
+    
+    # Update y-axes for the second plot (with dual scales)
+    fig.update_yaxes(
+        title_text="Loss",
+        row=2, col=1,
+        secondary_y=False,
+        range=[0, max(avg_losses)*1.1]  # Give some headroom for loss scale
+    )
+    
+    fig.update_yaxes(
+        title_text="Learning Rate",
+        row=2, col=1,
+        secondary_y=True,
+        range=[0, max(learning_rates)*1.1],  # Give some headroom for LR scale
+        tickformat=".1e"  # Scientific notation for small LR values
+    )
+    
+    # Save the plot
+    output_file = os.path.join(OUTPUT_PATH, 'training_metrics.html')
     fig.write_html(output_file)
-    print(f"Average Loss and Learning Rate plot saved to {output_file}")
+    print(f"Plot saved to {output_file}")
 
 def main():
     """
@@ -174,7 +264,7 @@ def main():
     that may occur during the process.
     """
     try:
-        plot_average_loss_and_learning_rate(LOG_FILE)
+        plot_training_metrics(LOG_FILE)
         print("Visualization complete. Check the output directory for the generated HTML plot.")
     except Exception as e:
         print(f"An error occurred during visualization: {str(e)}")
