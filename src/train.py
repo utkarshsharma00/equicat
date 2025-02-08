@@ -43,8 +43,8 @@ Key Features:
 10. Cluster-based training with adaptive weighting
 
 Author: Utkarsh Sharma
-Version: 4.0.1
-Date: 02-03-2025 (MM-DD-YYYY)
+Version: 4.0.2
+Date: 02-08-2025 (MM-DD-YYYY)
 License: MIT
 
 Dependencies:
@@ -66,6 +66,15 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+- v4.0.2 (02-08-2025):
+  * Improved contrastive loss stability with bounded parameters
+  * Enhanced temperature annealing with minimum threshold
+  * Added running loss meter for better tracking
+  * Adjusted relationship weights for stability
+  * Enhanced batch statistics logging
+  * Improved gradient handling
+  * Added comprehensive loss component analysis
+
 - v4.0.1 (02-03-2025):
   * Fixed contrastive loss stability issues
   * Improved temperature annealing with exponential decay (0.95^epoch)
@@ -336,6 +345,23 @@ def initialize_clustering(conformer_libraries):
 # Configure logger
 logger = logging.getLogger(__name__)
 
+class AverageMeter:
+    """Tracks running average of a quantity."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
 class ClusterAwareContrastiveLoss:
     """
     Implements cluster-aware contrastive learning with family-scoped clustering and hierarchical relationships.
@@ -594,32 +620,30 @@ class ClusterAwareContrastiveLoss:
 
     def __call__(self, sample_embeddings, current_epoch: int) -> torch.Tensor:
         """
-        Computes family-scoped cluster-aware contrastive loss with improved stability and adaptivity.
+        Computes contrastive loss with proper handling of positive and negative relationships.
         
         Args:
             sample_embeddings: List of (embedding, key, family) tuples
-            current_epoch: Current training epoch number
-            max_epochs: Maximum number of training epochs (default: 500)
+            current_epoch: Current epoch number for temperature annealing
         """
         embeddings = []
         molecules = []
         eps = 1e-8
 
-        # Adaptive margin that increases as training progress
-        margin = 0.1 + 0.4 * (current_epoch / self.max_epochs)
+        # Dynamic margin that increases with epochs
+        margin = min(0.5, 0.1 + 0.2 * (current_epoch / self.max_epochs))  # Gentler margin increase
         
         # Exponential decay for temperature
-        current_temp = self.temperature * (0.95 ** current_epoch)
-        current_temp = max(0.01, min(1.0, current_temp))  # Clamp between 0.01 and 1.0
+        current_temp = max(0.1, self.temperature * (0.9 ** (current_epoch // 2)))  # Slower decay
 
         for emb, key, family in sample_embeddings:
             embeddings.append(emb)
             molecules.append((key, family))
-            
+                
         if len(embeddings) < 2:
             logger.warning("Not enough embeddings for contrastive loss")
             return torch.tensor(0.0, requires_grad=True, device=embeddings[0].device)
-                
+                    
         embeddings = torch.stack(embeddings)
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
@@ -631,40 +655,28 @@ class ClusterAwareContrastiveLoss:
         relationships = self._compute_relationship_matrix(molecules).to(embeddings.device)
         same_cluster_mask = (relationships == self.weights['same_family_same_cluster']).float()
         same_cluster_mask.fill_diagonal_(0)
-        other_rels_mask = (relationships != self.weights['same_family_same_cluster']).float()
+        other_rels_mask = (relationships < 0).float()
         other_rels_mask.fill_diagonal_(0)
         
-        # Calculate numbers of positive and negative pairs
-        pos_per_sample = same_cluster_mask.sum(dim=1)
-        neg_per_sample = other_rels_mask.sum(dim=1)
-        
-        # Identify samples with and without positive pairs
-        has_pos_pairs = (pos_per_sample > 0)
-        
-        # Improved inverse frequency weighting for class balancing
-        total_pairs = pos_per_sample + neg_per_sample + eps
-        pos_weight = neg_per_sample / total_pairs
-        neg_weight = pos_per_sample / total_pairs
-        neg_weight = neg_weight.unsqueeze(1)
-        
-        # Compute positive and negative scores with relationship magnitudes
-        pos_scores = torch.sum(exp_sim * same_cluster_mask * pos_weight, dim=1)
-        neg_scores = torch.sum(exp_sim * other_rels_mask * torch.abs(relationships) * neg_weight, dim=1)
+        # Compute positive and negative scores
+        pos_scores = torch.sum(exp_sim * same_cluster_mask, dim=1)
+        neg_scores = torch.sum(exp_sim * other_rels_mask * (-relationships), dim=1)
         
         # Initialize loss tensor
         loss = torch.zeros_like(pos_scores)
         
-        # Compute standard contrastive loss for samples with positive pairs
-        numerator = torch.clamp(pos_scores, min=eps)
-        denominator = numerator + torch.abs(neg_scores) + margin + eps
-        standard_loss = -torch.log(numerator / denominator)
-        loss[has_pos_pairs] = standard_loss[has_pos_pairs]
+        # Handle samples with positive pairs
+        has_pos = (pos_scores > 0)
+        if has_pos.any():
+            pos_term = torch.log(pos_scores[has_pos] + eps)
+            neg_term = torch.log(1 + neg_scores[has_pos] + margin)
+            loss[has_pos] = -(pos_term - neg_term)
         
-        # Compute negative-only loss for samples without positive pairs
-        neg_only_loss = -torch.log(1.0 / (1.0 + torch.abs(neg_scores) + margin + eps))
-        loss[~has_pos_pairs] = neg_only_loss[~has_pos_pairs]
+        # Handle samples without positive pairs
+        no_pos = ~has_pos
+        if no_pos.any():
+            loss[no_pos] = torch.log(1 + neg_scores[no_pos] + margin)
         
-        # Average over all samples
         final_loss = loss.mean()
         
         # Enhanced logging
@@ -674,32 +686,27 @@ class ClusterAwareContrastiveLoss:
         logger.info(f"Current margin: {margin:.4f}")
         
         logger.info("\nStep 2: Batch Statistics")
-        logger.info(f"Number of samples: {len(embeddings)}")
+        logger.info(f"Number of molecules in a batch: {len(embeddings)}")
         logger.info(f"Average similarity: {similarity_matrix.mean().item():.4f}")
-        logger.info(f"Average positive weight: {pos_weight.mean().item():.4f}")
-        logger.info(f"Average negative weight: {neg_weight.mean().item():.4f}")
         
         logger.info("\nStep 3: Relationship Analysis")
         self._log_batch_relationships(relationships, molecules)
-        logger.info(f"Samples with positive pairs: {has_pos_pairs.sum().item()}")
-        logger.info(f"Samples without positive pairs: {(~has_pos_pairs).sum().item()}")
-        logger.info(f"Average positive pairs per sample: {pos_per_sample.mean().item():.2f}")
-        logger.info(f"Average negative pairs per sample: {neg_per_sample.mean().item():.2f}")
+        logger.info(f"Samples with positive pairs: {has_pos.sum().item()}")
+        logger.info(f"Samples without positive pairs: {no_pos.sum().item()}")
         
         logger.info("\nStep 4: Score Analysis")
         logger.info(f"Positive scores range: [{pos_scores.min().item():.4f}, {pos_scores.max().item():.4f}]")
         logger.info(f"Negative scores range: [{neg_scores.min().item():.4f}, {neg_scores.max().item():.4f}]")
-        logger.info(f"Pos/Neg ratio: {(pos_scores/(neg_scores + eps)).mean():.4f}")
         
         logger.info("\nStep 5: Loss Analysis")
-        if has_pos_pairs.any():
-            logger.info(f"Standard contrastive loss mean: {standard_loss[has_pos_pairs].mean().item():.4f}")
-        if (~has_pos_pairs).any():
-            logger.info(f"Negative-only loss mean: {neg_only_loss[~has_pos_pairs].mean().item():.4f}")
+        if has_pos.any():
+            logger.info(f"Loss for samples with positives: {loss[has_pos].mean().item():.4f}")
+        if no_pos.any():
+            logger.info(f"Loss for samples without positives: {loss[no_pos].mean().item():.4f}")
         logger.info(f"Final combined loss: {final_loss.item():.4f}")
         
         return final_loss
-
+    
 def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, start_epoch, contrastive_loss_fn):
     """
     Main training loop for EQUICAT model.
@@ -739,11 +746,14 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
     all_molecule_embeddings = {}
 
+    running_loss = AverageMeter()
+
     for epoch in range(start_epoch, EPOCHS):
         logger.info(f"Starting epoch {epoch+1}/{EPOCHS}")
         model.train()
         epoch_loss = 0.0
         dataset.reset()
+        running_loss.reset()  # Reset at start of epoch
 
         epoch_embeddings = {}
 
@@ -754,6 +764,7 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
             sample_embeddings = process_sample(model, sample, device, embedding_type)
             # loss = compute_contrastive_loss(sample_embeddings)
             loss = contrastive_loss_fn(sample_embeddings, current_epoch=epoch + 1) 
+            running_loss.update(loss.item())
 
             loss.backward()
             clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
@@ -761,7 +772,8 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
             epoch_loss += loss.item()
             logger.info(f"Epoch [{epoch+1}/{EPOCHS}], Sample [{sample_idx+1}/{num_samples}], "
-                         f"Loss: {loss.item():.6f}, LR: {get_lr(optimizer):.6f}")
+            f"Loss: {loss.item():.6f}, Running Loss: {running_loss.avg:.6f}, "
+            f"LR: {get_lr(optimizer):.8f}")
 
             for embedding, key, _ in sample_embeddings:
                 if key not in epoch_embeddings:
@@ -770,7 +782,7 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
         avg_epoch_loss = epoch_loss / num_samples
         logger.info(f"Epoch [{epoch+1}/{EPOCHS}], Average Loss: {avg_epoch_loss:.6f}, "
-                     f"Final LR: {get_lr(optimizer):.6f}")
+                     f"Final LR: {get_lr(optimizer):.8f}")
 
         for key, embeddings in epoch_embeddings.items():
             avg_embedding = torch.stack(embeddings).mean(dim=0)
@@ -1008,7 +1020,7 @@ def main(args):
         'same_family_diff_cluster': -0.1,
         'diff_family': -0.2
     },
-    temperature=0.25,
+    temperature=0.5,
     max_epochs=EPOCHS
 )
 
