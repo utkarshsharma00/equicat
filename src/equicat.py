@@ -66,6 +66,8 @@ Usage:
 For detailed usage instructions, please refer to the README.md file.
 
 Change Log:
+- v4.0.1 (12-14-2024):
+  * Added skip connection tensor (sc) computation and passing to product layers
 - v4.0.0 (12-14-2024):
   * Major version bump to align with EquiCat ecosystem
   * Major refactoring for improved modularity
@@ -89,7 +91,6 @@ ToDo:
 - Implement gradient checkpointing for memory efficiency
 - Add support for custom activation functions
 - Implement model parameter serialization
-- Add support for dynamic interaction depth
 - Enhance debug visualization tools
 - Add model architecture validation
 - Implement memory usage profiling
@@ -231,22 +232,30 @@ class EQUICAT(torch.nn.Module):
         # Process through multiple MACE layers
         for i in range(self.num_interactions):
             # Interaction layer
-            node_feats = self.interaction_layers[i].linear_up(node_feats)
-            print(f"Node features after linear up-projection in layer {i+1} shape:", node_feats.shape)
+            node_feats_up = self.interaction_layers[i].linear_up(node_feats)
+            print(f"Node features after linear up-projection in layer {i+1} shape:", node_feats_up.shape)
+            
             tp_weights = self.interaction_layers[i].conv_tp_weights(edge_feats)
             print("tp_weights shape:", tp_weights.shape)
-            mji = self.interaction_layers[i].conv_tp(node_feats[sender], edge_attrs, tp_weights)
+            
+            mji = self.interaction_layers[i].conv_tp(node_feats_up[sender], edge_attrs, tp_weights)
+            
             message = scatter_sum(src=mji, index=receiver, dim=0, dim_size=node_feats.shape[0])
             print("Message shape:", message.shape)
-            node_feats = self.interaction_layers[i].linear(message)
-            node_feats = self.interaction_layers[i].reshape(node_feats)
-
+            
+            # Get skip connection
+            sc = self.interaction_layers[i].skip_tp(node_feats, node_attrs)
+            
+            # Process message
+            message = self.interaction_layers[i].linear(message)
+            node_feats_processed = self.interaction_layers[i].reshape(message)
+            
             # Product layer
-            node_feats = self.product_layers[i](node_feats=node_feats, sc=None, node_attrs=node_attrs)
-
+            node_feats = self.product_layers[i](node_feats=node_feats_processed, sc=sc, node_attrs=node_attrs)
+            
             print(f"Node features after layer {i+1} shape:", node_feats.shape)
-
-        return node_feats
+        
+        return node_feats   
 
 def move_to_device(obj, device):
     """
