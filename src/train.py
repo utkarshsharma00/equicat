@@ -160,23 +160,23 @@ CONFORMER_LIBRARY_PATHS = {
     # "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
     # "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
 
-    "family1": "/Users/utkarsh/MMLI/bdsi/catalysts.clib",
-    "family2": "/Users/utkarsh/MMLI/bdsi/substrates.clib",
-    "family3": "/Users/utkarsh/MMLI/bdsi/products.clib",
+    # "family1": "/Users/utkarsh/MMLI/bdsi/catalysts.clib",
+    # "family2": "/Users/utkarsh/MMLI/bdsi/substrates.clib",
+    # "family3": "/Users/utkarsh/MMLI/bdsi/products.clib",
 
-    # "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/catalysts.clib",
-    # "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/substrates.clib",
-    # "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/products.clib",
+    "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/catalysts.clib",
+    "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/substrates.clib",
+    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/products.clib",
 }
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/bdsi_large"
-CLUSTERING_RESULTS_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
-# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/bdsi_large"
-# CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
+# OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/bdsi_large"
+# CLUSTERING_RESULTS_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
+OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/bdsi_large"
+CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
 SAMPLE_SIZE = 10
-MAX_CONFORMERS = 5
+MAX_CONFORMERS = 8
 CUTOFF = 6.0
 LEARNING_RATE = 1e-4
-EPOCHS = 20
+EPOCHS = 500
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 25
 # EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
@@ -230,7 +230,7 @@ def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
     if scheduler_type == 'cosine':
         return CosineAnnealingLR(optimizer, T_max=steps_per_epoch)
     elif scheduler_type == 'cosine_restart':
-        return CosineAnnealingWarmRestarts(optimizer, T_0=2, T_mult=2)
+        return CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2)
     elif scheduler_type == 'plateau':
         return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
