@@ -100,8 +100,8 @@ np.set_printoptions(precision=15)
 np.random.seed(0)
 
 # Constants
-OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/loss_check/"
-LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/loss_check/"
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/bdsi_large/"
+LOG_FILE_PATH = "/Users/utkarsh/MMLI/equicat/bdsi_large/"
 LOG_FILE = os.path.join(LOG_FILE_PATH, "training.log")
 
 def plot_training_metrics(log_file):

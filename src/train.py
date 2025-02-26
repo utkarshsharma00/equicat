@@ -139,6 +139,7 @@ from conformer_ensemble_embedding_combiner import process_molecule_conformers, m
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR, OneCycleLR, CosineAnnealingWarmRestarts
 from molecular_clustering import MolecularClusterProcessor, save_cluster_data
 from typing import Dict, Optional, List, Tuple, Any
+from io import StringIO
 
 torch.set_default_dtype(torch.float64)
 np.set_printoptions(precision=15)
@@ -154,23 +155,32 @@ CONFORMER_LIBRARY_PATHS = {
     # "family3": "/Users/utkarsh/MMLI/molli-data/00-libraries/thiols.clib",
     # "family4": "/Users/utkarsh/MMLI/molli-data/00-libraries/product_confs.clib",
 
-    "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
-    "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
-    "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
-    "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
+    # "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bpa_aligned.clib",
+    # "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/imine_confs.clib",
+    # "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/thiols.clib",
+    # "family4": "/eagle/FOUND4CHEM/utkarsh/dataset/product_confs.clib",
+
+    "family1": "/Users/utkarsh/MMLI/bdsi/catalysts.clib",
+    "family2": "/Users/utkarsh/MMLI/bdsi/substrates.clib",
+    "family3": "/Users/utkarsh/MMLI/bdsi/products.clib",
+
+    # "family1": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/catalysts.clib",
+    # "family2": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/substrates.clib",
+    # "family3": "/eagle/FOUND4CHEM/utkarsh/dataset/bdsi/products.clib",
 }
-# OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/epoch_large"
-# CLUSTERING_RESULTS_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
-OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/epoch_large"
-CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
-SAMPLE_SIZE = 30
-MAX_CONFORMERS = 10
+OUTPUT_PATH = "/Users/utkarsh/MMLI/equicat/bdsi_large"
+CLUSTERING_RESULTS_DIR = "/Users/utkarsh/MMLI/equicat/src/clustering_results"
+# OUTPUT_PATH = "/eagle/FOUND4CHEM/utkarsh/project/equicat/bdsi_large"
+# CLUSTERING_RESULTS_DIR = "/eagle/FOUND4CHEM/utkarsh/project/equicat/src/clustering_results"
+SAMPLE_SIZE = 10
+MAX_CONFORMERS = 5
 CUTOFF = 6.0
-LEARNING_RATE = 5e-4
-EPOCHS = 500
+LEARNING_RATE = 1e-4
+EPOCHS = 20
 GRADIENT_CLIP_VALUE = 1.0
 CHECKPOINT_INTERVAL = 25
-EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
+# EXCLUDED_MOLECULES = ['179_vi', '181_i', '180_i', '180_vi', '178_i', '178_vi']
+EXCLUDED_MOLECULES = []
 
 def setup_logging(log_file):
     """
@@ -220,7 +230,7 @@ def get_scheduler(scheduler_type, optimizer, num_epochs, steps_per_epoch):
     if scheduler_type == 'cosine':
         return CosineAnnealingLR(optimizer, T_max=steps_per_epoch)
     elif scheduler_type == 'cosine_restart':
-        return CosineAnnealingWarmRestarts(optimizer, T_0=15, T_mult=2)
+        return CosineAnnealingWarmRestarts(optimizer, T_0=2, T_mult=2)
     elif scheduler_type == 'plateau':
         return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
     elif scheduler_type == 'step':
@@ -390,8 +400,8 @@ class ClusterAwareContrastiveLoss:
         # Default weights with hierarchical structure
         default_weights = {
             'same_family_same_cluster': 1.0,  # Strong attraction within family+cluster
-            'same_family_diff_cluster': -0.25,  # Medium attraction within family
-            'diff_family': -0.5  # Strong repulsion between families
+            'same_family_diff_cluster': -0.15,  # Medium attraction within family
+            'diff_family': -0.35  # Strong repulsion between families
         }
         
         self.weights = weights if weights is not None else default_weights
@@ -627,10 +637,10 @@ class ClusterAwareContrastiveLoss:
         eps = 1e-8
 
         # Dynamic margin that increases with epochs
-        margin = min(0.5, 0.1 + 0.2 * (current_epoch / self.max_epochs))  # Gentler margin increase
+        margin = min(0.4, 0.1 + 0.1 * (current_epoch / self.max_epochs))  # Gentler margin increase
         
         # Exponential decay for temperature
-        current_temp = max(0.1, self.temperature * (0.9 ** (current_epoch // 2)))  # Slower decay
+        current_temp = max(0.15, self.temperature * (0.95 ** (current_epoch // 15)))  # Slower decay
 
         for emb, key, family in sample_embeddings:
             embeddings.append(emb)
@@ -736,11 +746,15 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
 
     best_loss = float('inf')
     best_model = None
-    patience = 200
+    patience = 75
     patience_counter = 0
     logger.info(f"Early stopping patience set to {patience} epochs")
 
     all_molecule_embeddings = {}
+    
+    previous_gradients = {}                 # For tracking gradient changes between epochs
+    gradient_check_epoch_frequency = 50     # Check every 50 epochs
+    gradient_check_samples = 2              # Check 2 random samples per check
 
     running_loss = AverageMeter()
 
@@ -763,6 +777,31 @@ def train_equicat(model, dataset, device, embedding_type, scheduler_type, args, 
             running_loss.update(loss.item())
 
             loss.backward()
+
+            if epoch % gradient_check_epoch_frequency == 0 or sample_idx < gradient_check_samples:
+                logger.info(f"=== Gradient Analysis (Epoch {epoch+1}, Sample {sample_idx+1}) ===")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        grad_mean = param.grad.mean().item()
+                        grad_min = param.grad.min().item()
+                        grad_max = param.grad.max().item()
+                        grad_std = param.grad.std().item()
+                        
+                        # Check if we have previous gradients to compare
+                        if name in previous_gradients:
+                            prev_norm = previous_gradients[name]['norm']
+                            norm_change = grad_norm - prev_norm
+                            logger.info(f"  {name}: norm={grad_norm:.6f} (Δ={norm_change:.6f}), mean={grad_mean:.6f}, min={grad_min:.6f}, max={grad_max:.6f}, std={grad_std:.6f}")
+                        else:
+                            logger.info(f"  {name}: norm={grad_norm:.6f}, mean={grad_mean:.6f}, min={grad_min:.6f}, max={grad_max:.6f}, std={grad_std:.6f}")
+                        
+                        # Store current gradients for next comparison
+                        previous_gradients[name] = {'norm': grad_norm, 'mean': grad_mean}
+                    else:
+                        logger.info(f"  {name}: No gradient")
+                logger.info("========================")
+
             clip_grad_norm_(model.parameters(), GRADIENT_CLIP_VALUE)
             optimizer.step()
 
@@ -1013,8 +1052,8 @@ def main(args):
     clustering_results_dir=CLUSTERING_RESULTS_DIR,
     weights={
         'same_family_same_cluster': 1.0,
-        'same_family_diff_cluster': -0.25,
-        'diff_family': -0.5
+        'same_family_diff_cluster': -0.15,
+        'diff_family': -0.35
     },
     temperature=0.25,
     max_epochs=EPOCHS
@@ -1064,7 +1103,19 @@ def main(args):
 
     logger.info("Initializing model")
     model = EQUICATPlusNonLinearReadout(model_config, z_table).to(device)
+
+    old_stdout = sys.stdout
+    string_buffer = StringIO()
+    sys.stdout = string_buffer
     print(model)
+    # Restore standard output
+    sys.stdout = old_stdout
+    # Log the captured output
+    model_str = string_buffer.getvalue()
+    logger.info("Model Architecture:")
+    for line in model_str.split('\n'):
+        logger.info(line)
+
     logger.info(f"Model initialized and moved to {device}")
 
     start_epoch = 0

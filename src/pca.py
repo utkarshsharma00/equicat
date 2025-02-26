@@ -95,8 +95,8 @@ import pandas as pd
 import re
 
 # Constants
-INPUT_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/final_molecule_embeddings.json"
-OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/epoch_large/embeddings_pca.html"
+INPUT_FILE = "/Users/utkarsh/MMLI/equicat/bdsi_large/final_molecule_embeddings.json"
+OUTPUT_FILE = "/Users/utkarsh/MMLI/equicat/bdsi_large/embeddings_pca.html"
 
 def load_embeddings(file_path):
     """
